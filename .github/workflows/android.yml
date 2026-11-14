@@ -42,7 +42,6 @@ jobs:
             echo 'export/android/debug_keystore_user = "androiddebugkey"'
             echo 'export/android/debug_keystore_pass = "android"'
           } >> "$F"
-          cat "$F"
 
       - name: Install Android build tools
         run: |
@@ -50,19 +49,30 @@ jobs:
           SDK=$(grep -h 'android_sdk_path' "$F" | head -n1 | cut -d'"' -f2)
           if [ -z "$SDK" ]; then SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/lib/android-sdk}}"; fi
           echo "SDK=$SDK"
-          ls "$SDK" "$SDK/build-tools" || true
           SM=$(which sdkmanager 2>/dev/null || find /usr /opt /root -name sdkmanager -type f 2>/dev/null | head -n1)
-          echo "SM=$SM"
           yes | "$SM" --sdk_root="$SDK" --licenses > /dev/null || true
           "$SM" --sdk_root="$SDK" "build-tools;35.0.1" "build-tools;36.0.0" "platforms;android-35" "platforms;android-36" || true
           grep -q 'android_sdk_path' "$F" || echo "export/android/android_sdk_path = \"$SDK\"" >> "$F"
-          ls "$SDK/build-tools" || true
+
+      - name: Patch project for Android
+        run: |
+          if ! grep -q "import_etc2_astc" project.godot; then
+            printf '\n[rendering]\n\ntextures/vram_compression/import_etc2_astc=true\n' >> project.godot
+          fi
+          tail -n 8 project.godot
 
       - name: Import resources
         run: godot --headless --verbose --editor --quit || true
 
       - name: Build APK
         run: |
+          echo "=== DEBUG: presets ==="
+          grep -v -i password export_presets.cfg | head -n 150
+          echo "=== DEBUG: templates ==="
+          ls -la ~/.local/share/godot/export_templates/*/ | head -n 40
+          echo "=== DEBUG: editor settings ==="
+          grep -i android ~/.config/godot/editor_settings-4.6.tres || true
+          echo "=== DEBUG: end ==="
           mkdir -v -p build/android
           godot --headless --verbose --export-debug "Android" build/android/zona.apk
 
