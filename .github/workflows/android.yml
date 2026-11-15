@@ -28,40 +28,30 @@ jobs:
             mv /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable ~/.local/share/godot/export_templates/${GODOT_VERSION}.stable
           fi
 
-      - name: Setup Android settings
+      - name: Install tools
         run: |
-          mkdir -v -p ~/.config/godot
-          cp -v /root/.config/godot/editor_settings-4*.tres ~/.config/godot/ || true
-          JAVA_BIN=$(readlink -f "$(which java)")
-          JDK=$(dirname "$(dirname "$JAVA_BIN")")
-          [ -f /root/debug.keystore ] || keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android -keystore /root/debug.keystore -storepass android -dname "CN=Android Debug,O=Android,C=US" -validity 9999 -deststoretype pkcs12
-          F=~/.config/godot/editor_settings-4.6.tres
-          [ -f "$F" ] || printf '[gd_resource type="EditorSettings" format=3]\n\n[resource]\n' > "$F"
-          echo "" >> "$F"
-          {
-            echo "export/android/java_sdk_path = \"$JDK\""
-            echo 'export/android/debug_keystore = "/root/debug.keystore"'
-            echo 'export/android/debug_keystore_user = "androiddebugkey"'
-            echo 'export/android/debug_keystore_pass = "android"'
-          } >> "$F"
+          apt-get update -qq
+          apt-get install -y -qq imagemagick ffmpeg
 
-      - name: Install Android build tools
+      - name: Slim assets (textures and audio)
         run: |
-          F=~/.config/godot/editor_settings-4.6.tres
-          SDK=$(grep -h 'android_sdk_path' "$F" | head -n1 | cut -d'"' -f2)
-          if [ -z "$SDK" ]; then SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/lib/android-sdk}}"; fi
-          SM=$(which sdkmanager 2>/dev/null || find /usr /opt /root -name sdkmanager -type f 2>/dev/null | head -n1)
-          yes | "$SM" --sdk_root="$SDK" --licenses > /dev/null || true
-          "$SM" --sdk_root="$SDK" "build-tools;35.0.1" "build-tools;36.0.0" "platforms;android-35" "platforms;android-36" || true
-          grep -q 'android_sdk_path' "$F" || echo "export/android/android_sdk_path = \"$SDK\"" >> "$F"
-
-      - name: Patch project for Android
-        run: |
-          if ! grep -q "import_etc2_astc" project.godot; then
-            printf '\n[rendering]\n\ntextures/vram_compression/import_etc2_astc=true\n' >> project.godot
+          if [ -d freefire/models ]; then
+            find freefire/models -iname '*_C.png' -exec mogrify -resize '2048x2048>' {} +
+            find freefire/models \( -iname '*_N.png' -o -iname '*_RMAO.png' \) -exec mogrify -resize '1024x1024>' {} +
           fi
-          sed -i 's|^permissions/internet=.*|permissions/internet=true|' export_presets.cfg
-          grep -n "permissions/internet" export_presets.cfg || true
+          if [ -d freefire/audio ]; then
+            find freefire/audio -iname '*.wav' | while read -r f; do
+              ffmpeg -y -loglevel error -i "$f" -c:a libvorbis -q:a 6 "${f%.*}.ogg" && rm "$f"
+            done
+          fi
+
+      - name: Slim project (only our game)
+        run: |
+          sed -i 's|^run/main_scene=.*|run/main_scene="res://freefire/ultimatum.tscn"|' project.godot
+          awk '/^\[autoload\]/{skip=1;next} /^\[/{skip=0} !skip' project.godot > project.tmp && mv project.tmp project.godot
+          LIST=$(find freefire -type f \( -name '*.gd' -o -name '*.tscn' -o -iname '*.png' -o -iname '*.fbx' -o -iname '*.glb' -o -iname '*.ogg' -o -iname '*.wav' \) | sed 's|^|"res://|; s|$|"|' | paste -sd, -)
+          sed -i "s|^export_files=.*|export_files=PackedStringArray($LIST)|" export_presets.cfg
+          grep -n "export_files" export_presets.cfg | cut -c1-300
 
       - name: Import resources
         run: godot --headless --verbose --editor --quit || true
@@ -70,11 +60,6 @@ jobs:
         run: |
           mkdir -v -p build/android
           godot --headless --verbose --export-debug "Android" build/android/zona.apk
-
-      - name: Build update PCK
-        run: |
-          godot --headless --verbose --export-pack "Android" build/android/game.pck
-          printf '%s' "${{ github.run_number }}" > build/android/version.txt
           ls -la build/android
 
       - uses: actions/upload-artifact@v4
@@ -82,11 +67,10 @@ jobs:
           name: zona-apk
           path: build/android/zona.apk
 
-      - uses: softprops/action-gh-release@v2
+      - name: Publish release (stable download link)
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: Latest build
-          files: |
-            build/android/zona.apk
-            build/android/game.pck
-            build/android/version.txt
+          name: ZONA (oxirgi versiya)
+          make_latest: true
+          files: build/android/zona.apk
