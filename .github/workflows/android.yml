@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 env:
   GODOT_VERSION: "4.6"
 
@@ -31,7 +34,6 @@ jobs:
           cp -v /root/.config/godot/editor_settings-4*.tres ~/.config/godot/ || true
           JAVA_BIN=$(readlink -f "$(which java)")
           JDK=$(dirname "$(dirname "$JAVA_BIN")")
-          echo "JDK=$JDK"
           [ -f /root/debug.keystore ] || keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android -keystore /root/debug.keystore -storepass android -dname "CN=Android Debug,O=Android,C=US" -validity 9999 -deststoretype pkcs12
           F=~/.config/godot/editor_settings-4.6.tres
           [ -f "$F" ] || printf '[gd_resource type="EditorSettings" format=3]\n\n[resource]\n' > "$F"
@@ -48,7 +50,6 @@ jobs:
           F=~/.config/godot/editor_settings-4.6.tres
           SDK=$(grep -h 'android_sdk_path' "$F" | head -n1 | cut -d'"' -f2)
           if [ -z "$SDK" ]; then SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/lib/android-sdk}}"; fi
-          echo "SDK=$SDK"
           SM=$(which sdkmanager 2>/dev/null || find /usr /opt /root -name sdkmanager -type f 2>/dev/null | head -n1)
           yes | "$SM" --sdk_root="$SDK" --licenses > /dev/null || true
           "$SM" --sdk_root="$SDK" "build-tools;35.0.1" "build-tools;36.0.0" "platforms;android-35" "platforms;android-36" || true
@@ -59,24 +60,33 @@ jobs:
           if ! grep -q "import_etc2_astc" project.godot; then
             printf '\n[rendering]\n\ntextures/vram_compression/import_etc2_astc=true\n' >> project.godot
           fi
-          tail -n 8 project.godot
+          sed -i 's|^permissions/internet=.*|permissions/internet=true|' export_presets.cfg
+          grep -n "permissions/internet" export_presets.cfg || true
 
       - name: Import resources
         run: godot --headless --verbose --editor --quit || true
 
       - name: Build APK
         run: |
-          echo "=== DEBUG: presets ==="
-          grep -v -i password export_presets.cfg | head -n 150
-          echo "=== DEBUG: templates ==="
-          ls -la ~/.local/share/godot/export_templates/*/ | head -n 40
-          echo "=== DEBUG: editor settings ==="
-          grep -i android ~/.config/godot/editor_settings-4.6.tres || true
-          echo "=== DEBUG: end ==="
           mkdir -v -p build/android
           godot --headless --verbose --export-debug "Android" build/android/zona.apk
+
+      - name: Build update PCK
+        run: |
+          godot --headless --verbose --export-pack "Android" build/android/game.pck
+          printf '%s' "${{ github.run_number }}" > build/android/version.txt
+          ls -la build/android
 
       - uses: actions/upload-artifact@v4
         with:
           name: zona-apk
           path: build/android/zona.apk
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          files: |
+            build/android/zona.apk
+            build/android/game.pck
+            build/android/version.txt
