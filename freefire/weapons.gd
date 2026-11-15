@@ -1,17 +1,20 @@
 extends RefCounted
 
+# dmg: zarar, rate: otish oraligi (s), mag: magazin, rl: zaryad (s)
+# spread: sochilish, pel: oq soni (drobovik), head: bosh koeffitsiyenti
+# range: samarali masofa (m), recoil: har otishda kamera tepishi, price: narxi
 const W := [
-	{"n": "M4A1", "dmg": 22, "rate": 0.11, "mag": 30, "rl": 1.6, "spread": 0.012, "pel": 1},
-	{"n": "AK47", "dmg": 27, "rate": 0.13, "mag": 30, "rl": 1.8, "spread": 0.018, "pel": 1},
-	{"n": "SCAR", "dmg": 25, "rate": 0.12, "mag": 30, "rl": 1.7, "spread": 0.012, "pel": 1},
-	{"n": "MP5", "dmg": 15, "rate": 0.07, "mag": 30, "rl": 1.4, "spread": 0.025, "pel": 1},
-	{"n": "UMP", "dmg": 17, "rate": 0.08, "mag": 30, "rl": 1.4, "spread": 0.02, "pel": 1},
-	{"n": "VECTOR", "dmg": 13, "rate": 0.05, "mag": 35, "rl": 1.5, "spread": 0.03, "pel": 1},
-	{"n": "M1887", "dmg": 13, "rate": 0.9, "mag": 2, "rl": 1.2, "spread": 0.05, "pel": 7},
-	{"n": "SPAS12", "dmg": 11, "rate": 0.7, "mag": 8, "rl": 1.8, "spread": 0.045, "pel": 7},
-	{"n": "AWM", "dmg": 90, "rate": 1.4, "mag": 5, "rl": 2.2, "spread": 0.001, "pel": 1},
-	{"n": "KAR98K", "dmg": 75, "rate": 1.1, "mag": 5, "rl": 2.0, "spread": 0.002, "pel": 1},
-	{"n": "M249", "dmg": 20, "rate": 0.08, "mag": 100, "rl": 3.5, "spread": 0.02, "pel": 1},
-	{"n": "USP", "dmg": 18, "rate": 0.28, "mag": 12, "rl": 1.1, "spread": 0.015, "pel": 1},
-	{"n": "DESERT EAGLE", "dmg": 48, "rate": 0.6, "mag": 7, "rl": 1.5, "spread": 0.01, "pel": 1},
+	{"n": "M4A1", "dmg": 53, "rate": 0.11, "mag": 30, "rl": 1.7, "spread": 0.012, "pel": 1, "head": 2.0, "range": 65.0, "recoil": 0.010, "price": 1000},
+	{"n": "AK47", "dmg": 61, "rate": 0.13, "mag": 30, "rl": 1.9, "spread": 0.018, "pel": 1, "head": 2.0, "range": 70.0, "recoil": 0.016, "price": 1100},
+	{"n": "SCAR", "dmg": 55, "rate": 0.12, "mag": 30, "rl": 1.8, "spread": 0.012, "pel": 1, "head": 2.0, "range": 70.0, "recoil": 0.011, "price": 1000},
+	{"n": "MP5", "dmg": 38, "rate": 0.07, "mag": 30, "rl": 1.5, "spread": 0.024, "pel": 1, "head": 1.8, "range": 35.0, "recoil": 0.008, "price": 600},
+	{"n": "UMP", "dmg": 42, "rate": 0.08, "mag": 30, "rl": 1.5, "spread": 0.020, "pel": 1, "head": 1.8, "range": 40.0, "recoil": 0.009, "price": 650},
+	{"n": "VECTOR", "dmg": 34, "rate": 0.05, "mag": 35, "rl": 1.6, "spread": 0.030, "pel": 1, "head": 1.8, "range": 30.0, "recoil": 0.007, "price": 700},
+	{"n": "M1887", "dmg": 12, "rate": 0.9, "mag": 2, "rl": 1.3, "spread": 0.050, "pel": 8, "head": 1.6, "range": 12.0, "recoil": 0.040, "price": 800},
+	{"n": "SPAS12", "dmg": 11, "rate": 0.7, "mag": 8, "rl": 2.0, "spread": 0.045, "pel": 8, "head": 1.6, "range": 14.0, "recoil": 0.030, "price": 750},
+	{"n": "AWM", "dmg": 90, "rate": 1.3, "mag": 5, "rl": 2.3, "spread": 0.001, "pel": 1, "head": 2.5, "range": 140.0, "recoil": 0.040, "price": 2000},
+	{"n": "KAR98K", "dmg": 90, "rate": 1.1, "mag": 5, "rl": 2.1, "spread": 0.002, "pel": 1, "head": 2.2, "range": 120.0, "recoil": 0.035, "price": 1500},
+	{"n": "M249", "dmg": 55, "rate": 0.09, "mag": 100, "rl": 3.6, "spread": 0.020, "pel": 1, "head": 1.8, "range": 80.0, "recoil": 0.012, "price": 1600},
+	{"n": "USP", "dmg": 30, "rate": 0.22, "mag": 12, "rl": 1.1, "spread": 0.012, "pel": 1, "head": 2.0, "range": 35.0, "recoil": 0.020, "price": 0},
+	{"n": "DESERT EAGLE", "dmg": 62, "rate": 0.6, "mag": 7, "rl": 1.6, "spread": 0.010, "pel": 1, "head": 1.8, "range": 45.0, "recoil": 0.050, "price": 700},
 ]
