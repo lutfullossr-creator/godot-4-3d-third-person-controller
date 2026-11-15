@@ -4,6 +4,9 @@ const WeaponDB = preload("res://freefire/weapons.gd")
 const SPEED := [5.0, 2.4, 1.0]
 const BODY_H := [1.4, 0.9, 0.7]
 const HEAD_Y := [1.6, 1.1, 0.62]
+const VEST_RED := [0.0, 0.25, 0.5, 0.65]
+const HELM_RED := [0.0, 0.2, 0.3, 0.4]
+const STANCE_SPREAD := [1.0, 0.7, 0.5]
 
 signal hit_info(attacker, target, dmg, head)
 signal died(f)
@@ -29,6 +32,9 @@ var use_origin := false
 var ai_t := 0.0
 var ai_strafe := 0.0
 var ai_head := false
+var vest := 0
+var helmet := 0
+var bloom := 0.0
 var body_col: CollisionShape3D
 var head_col: CollisionShape3D
 var head_area: Area3D
@@ -121,6 +127,7 @@ func reset(pos: Vector3, y: float) -> void:
 	velocity = Vector3.ZERO
 	cd = 0.0
 	rl = 0.0
+	bloom = 0.0
 	move_input = Vector2.ZERO
 	want_fire = false
 	want_jump = false
@@ -137,6 +144,8 @@ func reload() -> void:
 func hurt(dmg: int, by, head: bool) -> void:
 	if not alive:
 		return
+	var red: float = HELM_RED[helmet] if head else VEST_RED[vest]
+	dmg = maxi(1, int(round(float(dmg) * (1.0 - red))))
 	hp -= dmg
 	hit_info.emit(by, self, dmg, head)
 	if hp <= 0:
@@ -158,26 +167,62 @@ func try_fire() -> void:
 	mag -= 1
 	cd = w["rate"] * (1.8 if is_bot else 1.0)
 	var from := origin_override if use_origin else eye()
+	var muzzle := gun_mesh.global_position
 	var space := get_world_3d().direct_space_state
+	var rng: float = w["range"]
+	var sp: float = (float(w["spread"]) + bloom) * STANCE_SPREAD[stance] * (1.0 + move_input.length() * 0.8) * (3.0 if is_bot else 1.0)
 	for i in range(int(w["pel"])):
-		var sp: float = w["spread"] * (3.0 if is_bot else 1.0)
 		var d := (aim_dir + Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)) * sp).normalized()
-		var q := PhysicsRayQueryParameters3D.create(from, from + d * 120.0, 7, [get_rid(), head_area.get_rid()])
+		var far := from + d * 150.0
+		var q := PhysicsRayQueryParameters3D.create(from, far, 7, [get_rid(), head_area.get_rid()])
 		q.collide_with_areas = true
 		var r := space.intersect_ray(q)
-		if r.is_empty():
-			continue
-		var c = r["collider"]
-		var tgt = null
-		var head := false
-		if c is Area3D:
-			tgt = c.get_parent()
-			head = true
-		elif c.has_method("hurt"):
-			tgt = c
-		if tgt != null and tgt.has_method("hurt") and tgt.alive and tgt.team != team:
-			var dmg := int(float(w["dmg"]) * (2.4 if head else 1.0) * (0.5 if is_bot else 1.0))
-			tgt.hurt(dmg, self, head)
+		var end := far
+		if not r.is_empty():
+			end = r["position"]
+			var c = r["collider"]
+			var tgt = null
+			var head := false
+			if c is Area3D:
+				tgt = c.get_parent()
+				head = true
+			elif c.has_method("hurt"):
+				tgt = c
+			if tgt != null and tgt.has_method("hurt") and tgt.alive and tgt.team != team:
+				var dist := from.distance_to(end)
+				var fall := 1.0
+				if dist > rng:
+					fall = maxf(0.35, 1.0 - (dist - rng) / rng)
+				var hm: float = float(w["head"]) if head else 1.0
+				var dmg := int(float(w["dmg"]) * hm * fall * (0.5 if is_bot else 1.0))
+				tgt.hurt(dmg, self, head)
+		if i < 2:
+			_tracer(muzzle, end)
+	bloom = minf(bloom + float(w["recoil"]) * 0.15, 0.02)
+	if not is_bot:
+		pitch = clampf(pitch + float(w["recoil"]) * 0.7 * randf_range(0.8, 1.2), -1.0, 1.0)
+		yaw += randf_range(-0.5, 0.5) * float(w["recoil"]) * 0.7
+
+
+func _tracer(a: Vector3, b: Vector3) -> void:
+	var dist := a.distance_to(b)
+	if dist < 0.5 or get_parent() == null:
+		return
+	var m := MeshInstance3D.new()
+	var bm := BoxMesh.new()
+	bm.size = Vector3(0.03, 0.03, dist)
+	m.mesh = bm
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(1.0, 0.85, 0.4, 1.0)
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.material_override = mat
+	get_parent().add_child(m)
+	m.global_position = (a + b) * 0.5
+	m.look_at(b, Vector3.UP)
+	var tw := m.create_tween()
+	tw.tween_property(mat, "albedo_color:a", 0.0, 0.08)
+	tw.tween_callback(m.queue_free)
 
 
 func _physics_process(delta: float) -> void:
@@ -187,6 +232,7 @@ func _physics_process(delta: float) -> void:
 		last_stance = stance
 		apply_stance()
 	cd -= delta
+	bloom = move_toward(bloom, 0.0, delta * 0.05)
 	if rl > 0.0:
 		rl -= delta
 		if rl <= 0.0:
