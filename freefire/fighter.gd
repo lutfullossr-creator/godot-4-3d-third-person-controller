@@ -4,9 +4,57 @@ const WeaponDB = preload("res://freefire/weapons.gd")
 const SPEED := [5.0, 2.4, 1.0]
 const BODY_H := [1.4, 0.9, 0.7]
 const HEAD_Y := [1.6, 1.1, 0.62]
-const VEST_RED := [0.0, 0.25, 0.5, 0.65]
-const HELM_RED := [0.0, 0.2, 0.3, 0.4]
-const STANCE_SPREAD := [1.0, 0.7, 0.5]
+
+const RELOAD_NAME := {
+	"ar": "reload_ar", "smg": "reload_ar", "lmg": "reload_ar", "sniper": "reload_ar",
+	"pistol": "reload_pistol", "shotgun": "shotgun_cock",
+}
+static var _snd_cache := {}
+static var _fit_cache := {}
+
+# Haqiqiy 3D qurol modellari (FBX + tekstura). Fayl boʻlmasa, oddiy model ishlatiladi.
+const MODELS := {
+	"AK47": {"path": "res://freefire/models/SKM_AK47.fbx", "tex": "res://freefire/models/T_AK47_", "len": 0.95},
+	"M700": {"path": "res://freefire/models/SKM_M700.fbx", "tex": "res://freefire/models/T_M700_", "len": 1.12},
+}
+const MODEL_FOR := {"M4A1": "AK47", "AK47": "AK47", "SCAR": "AK47", "AWM": "M700", "KAR98K": "M700"}
+
+const DK := Color(0.1, 0.1, 0.11)
+const MT := Color(0.32, 0.32, 0.34)
+const WD := Color(0.42, 0.27, 0.13)
+# qurol modellari: [olcham, joy, rang], "m" = ogʻiz uzunligi (z)
+const GUNS := {
+	"ar": {"m": -0.62, "p": [
+		[Vector3(0.06, 0.09, 0.45), Vector3(0, 0, -0.2), DK],
+		[Vector3(0.03, 0.03, 0.28), Vector3(0, 0.01, -0.5), MT],
+		[Vector3(0.05, 0.1, 0.22), Vector3(0, -0.01, 0.14), WD],
+		[Vector3(0.045, 0.2, 0.07), Vector3(0, -0.14, -0.18), MT],
+		[Vector3(0.04, 0.04, 0.1), Vector3(0, 0.07, -0.2), DK]]},
+	"smg": {"m": -0.42, "p": [
+		[Vector3(0.06, 0.09, 0.32), Vector3(0, 0, -0.12), DK],
+		[Vector3(0.025, 0.025, 0.18), Vector3(0, 0.01, -0.34), MT],
+		[Vector3(0.04, 0.2, 0.05), Vector3(0, -0.14, -0.1), MT],
+		[Vector3(0.04, 0.1, 0.05), Vector3(0, -0.1, 0.02), DK]]},
+	"shotgun": {"m": -0.82, "p": [
+		[Vector3(0.06, 0.08, 0.4), Vector3(0, 0, -0.1), DK],
+		[Vector3(0.035, 0.035, 0.6), Vector3(0, 0.01, -0.5), MT],
+		[Vector3(0.06, 0.06, 0.2), Vector3(0, -0.04, -0.4), WD],
+		[Vector3(0.05, 0.09, 0.25), Vector3(0, -0.01, 0.2), WD]]},
+	"sniper": {"m": -1.1, "p": [
+		[Vector3(0.06, 0.09, 0.5), Vector3(0, 0, -0.15), DK],
+		[Vector3(0.03, 0.03, 0.75), Vector3(0, 0.01, -0.75), MT],
+		[Vector3(0.05, 0.05, 0.3), Vector3(0, 0.09, -0.2), DK],
+		[Vector3(0.06, 0.11, 0.3), Vector3(0, -0.01, 0.22), WD],
+		[Vector3(0.04, 0.08, 0.06), Vector3(0, -0.08, -0.1), MT]]},
+	"lmg": {"m": -0.8, "p": [
+		[Vector3(0.07, 0.1, 0.5), Vector3(0, 0, -0.15), DK],
+		[Vector3(0.03, 0.03, 0.4), Vector3(0, 0.01, -0.6), MT],
+		[Vector3(0.12, 0.14, 0.14), Vector3(0, -0.15, -0.12), MT],
+		[Vector3(0.05, 0.1, 0.25), Vector3(0, 0, 0.16), DK]]},
+	"pistol": {"m": -0.17, "p": [
+		[Vector3(0.045, 0.06, 0.2), Vector3(0, 0, -0.05), MT],
+		[Vector3(0.04, 0.12, 0.06), Vector3(0, -0.08, 0.03), DK]]},
+}
 
 signal hit_info(attacker, target, dmg, head)
 signal died(f)
@@ -14,7 +62,10 @@ signal died(f)
 var team := 0
 var is_bot := true
 var hp := 200
-var wid := 0
+var wid := 0:
+	set(v):
+		wid = v
+		_build_gun()
 var mag := 30
 var cd := 0.0
 var rl := 0.0
@@ -32,20 +83,46 @@ var use_origin := false
 var ai_t := 0.0
 var ai_strafe := 0.0
 var ai_head := false
-var vest := 0
-var helmet := 0
-var bloom := 0.0
+var kick := 0.0
+var flash_t := 0.0
+var step_t := 0.0
+var walk_t := 0.0
+var pool: Array = []
+var pool_i := 0
 var body_col: CollisionShape3D
 var head_col: CollisionShape3D
 var head_area: Area3D
 var body_mesh: MeshInstance3D
 var head_mesh: MeshInstance3D
-var gun_mesh: MeshInstance3D
+var rig: Node3D
+var gun_root: Node3D
+var parts_root: Node3D
+var muzzle: Node3D
+var flash_light: OmniLight3D
+var flash_mesh: MeshInstance3D
 
 
 func _mat(c: Color) -> StandardMaterial3D:
 	var m := StandardMaterial3D.new()
 	m.albedo_color = c
+	return m
+
+
+func _glow(c: Color) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_color = c
+	m.emission_enabled = true
+	m.emission = c
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	return m
+
+
+func _box_mesh(size: Vector3, mat: Material) -> MeshInstance3D:
+	var m := MeshInstance3D.new()
+	var b := BoxMesh.new()
+	b.size = size
+	m.mesh = b
+	m.material_override = mat
 	return m
 
 
@@ -87,13 +164,206 @@ func setup(t: int, bot: bool) -> void:
 	head_mesh.mesh = sm
 	head_mesh.material_override = _mat(Color(0.9, 0.72, 0.55))
 	add_child(head_mesh)
-	var gm := BoxMesh.new()
-	gm.size = Vector3(0.08, 0.1, 0.7)
-	gun_mesh = MeshInstance3D.new()
-	gun_mesh.mesh = gm
-	gun_mesh.material_override = _mat(Color(0.1, 0.1, 0.1))
-	add_child(gun_mesh)
+	# qurol va qoʻllar
+	rig = Node3D.new()
+	add_child(rig)
+	gun_root = Node3D.new()
+	rig.add_child(gun_root)
+	parts_root = Node3D.new()
+	gun_root.add_child(parts_root)
+	var skin := _mat(col.darkened(0.15))
+	var arm_r := _box_mesh(Vector3(0.09, 0.09, 0.5), skin)
+	arm_r.position = Vector3(0.04, -0.03, 0.22)
+	arm_r.rotation_degrees.y = -8.0
+	gun_root.add_child(arm_r)
+	var arm_l := _box_mesh(Vector3(0.09, 0.09, 0.55), skin)
+	arm_l.position = Vector3(-0.1, -0.03, -0.1)
+	arm_l.rotation_degrees.y = 18.0
+	gun_root.add_child(arm_l)
+	muzzle = Node3D.new()
+	gun_root.add_child(muzzle)
+	flash_mesh = MeshInstance3D.new()
+	var fs := SphereMesh.new()
+	fs.radius = 0.09
+	fs.height = 0.18
+	flash_mesh.mesh = fs
+	flash_mesh.material_override = _glow(Color(1.0, 0.75, 0.25))
+	muzzle.add_child(flash_mesh)
+	flash_light = OmniLight3D.new()
+	flash_light.light_color = Color(1.0, 0.7, 0.3)
+	flash_light.light_energy = 4.0
+	flash_light.omni_range = 6.0
+	muzzle.add_child(flash_light)
+	flash_mesh.visible = false
+	flash_light.visible = false
+	# ovoz havzasi
+	for i in range(6):
+		var p := AudioStreamPlayer3D.new()
+		p.unit_size = 14.0
+		p.max_distance = 150.0
+		add_child(p)
+		pool.append(p)
 	apply_stance()
+	_build_gun()
+
+
+func _snd(sname: String, fallback: String = "") -> AudioStream:
+	if not _snd_cache.has(sname):
+		var p := "res://freefire/audio/%s.wav" % sname
+		_snd_cache[sname] = load(p) if ResourceLoader.exists(p) else null
+	var r = _snd_cache[sname]
+	if r == null and fallback != "":
+		return _snd(fallback)
+	return r
+
+
+func _tex(path: String):
+	return load(path) if ResourceLoader.exists(path) else null
+
+
+func _gun_material(base: String) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	var c = _tex(base + "C.png")
+	if c != null:
+		m.albedo_texture = c
+	var n = _tex(base + "N.png")
+	if n != null:
+		m.normal_enabled = true
+		m.normal_texture = n
+	var r = _tex(base + "RMAO.png")
+	if r != null:
+		m.roughness_texture = r
+		m.roughness_texture_channel = BaseMaterial3D.TEXTURE_CHANNEL_RED
+		m.metallic = 1.0
+		m.metallic_texture = r
+		m.metallic_texture_channel = BaseMaterial3D.TEXTURE_CHANNEL_GREEN
+		m.ao_enabled = true
+		m.ao_texture = r
+		m.ao_texture_channel = BaseMaterial3D.TEXTURE_CHANNEL_BLUE
+	return m
+
+
+func _collect_meshes(n: Node, out: Array) -> void:
+	if n is MeshInstance3D:
+		out.append(n)
+	for c in n.get_children():
+		_collect_meshes(c, out)
+
+
+func _xform_to(n: Node, root: Node) -> Transform3D:
+	var t := Transform3D.IDENTITY
+	var cur: Node = n
+	while cur != null and cur != root:
+		if cur is Node3D:
+			t = (cur as Node3D).transform * t
+		cur = cur.get_parent()
+	return t
+
+
+# Modelni avtomatik joylashtirish: oʻlcham, ogʻiz yoʻnalishi (-Z) va tepa tomon (+Y)
+func _compute_fit(holder: Node3D, inst: Node3D, meshes: Array, info: Dictionary) -> Dictionary:
+	inst.transform = Transform3D.IDENTITY
+	var box := AABB()
+	var first := true
+	for m in meshes:
+		if m.mesh == null:
+			continue
+		var a: AABB = _xform_to(m, holder) * m.get_aabb()
+		box = a if first else box.merge(a)
+		first = false
+	var size := box.size
+	var ax := 0
+	if size.y > size[ax]:
+		ax = 1
+	if size.z > size[ax]:
+		ax = 2
+	var hx := 1 if ax != 1 else 0
+	var other := 3 - ax - hx
+	if size[other] > size[hx]:
+		hx = other
+	# ogʻirlik markazi (ogʻiz va tepa tomonni taxmin qilish uchun)
+	var sum_a := 0.0
+	var sum_h := 0.0
+	var cnt := 0
+	for m in meshes:
+		if m.mesh == null:
+			continue
+		var t := _xform_to(m, holder)
+		var faces: PackedVector3Array = m.mesh.get_faces()
+		var step := maxi(1, faces.size() / 4000)
+		var i := 0
+		while i < faces.size():
+			var v: Vector3 = t * faces[i]
+			sum_a += v[ax]
+			sum_h += v[hx]
+			cnt += 1
+			i += step
+	var frac_a := 0.5
+	var frac_h := 0.5
+	if cnt > 0 and size[ax] > 0.0 and size[hx] > 0.0:
+		frac_a = (sum_a / cnt - box.position[ax]) / size[ax]
+		frac_h = (sum_h / cnt - box.position[hx]) / size[hx]
+	var e_a := Vector3.ZERO
+	e_a[ax] = 1.0
+	var e_h := Vector3.ZERO
+	e_h[hx] = 1.0
+	var u_mz := e_a if frac_a < 0.5 else -e_a
+	var u_up := e_h if frac_h < 0.5 else -e_h
+	var z_dir := -u_mz
+	var y_dir := u_up
+	var x_dir := y_dir.cross(z_dir)
+	var rot := Basis(x_dir, y_dir, z_dir).transposed()
+	var length: float = info["len"]
+	var sc := length / maxf(size[ax], 0.0001)
+	var b: Basis = rot * sc
+	var target := Vector3(0.0, 0.02, -0.15 * length)
+	var origin := target - b * box.get_center()
+	return {"xf": Transform3D(b, origin), "muzzle": Vector3(0.0, 0.02, target.z - length * 0.5)}
+
+
+func _make_model(key: String):
+	var info: Dictionary = MODELS[key]
+	if not ResourceLoader.exists(info["path"]):
+		return null
+	var scene = load(info["path"])
+	if not (scene is PackedScene):
+		return null
+	var inst: Node3D = scene.instantiate()
+	var holder := Node3D.new()
+	holder.add_child(inst)
+	var meshes: Array = []
+	_collect_meshes(inst, meshes)
+	if meshes.is_empty():
+		holder.free()
+		return null
+	var mat := _gun_material(info["tex"])
+	for m in meshes:
+		m.material_override = mat
+	if not _fit_cache.has(key):
+		_fit_cache[key] = _compute_fit(holder, inst, meshes, info)
+	var f: Dictionary = _fit_cache[key]
+	inst.transform = f["xf"]
+	return {"node": holder, "muzzle": f["muzzle"]}
+
+
+func _build_gun() -> void:
+	if parts_root == null:
+		return
+	for c in parts_root.get_children():
+		c.queue_free()
+	var mk: String = MODEL_FOR.get(WeaponDB.W[wid]["n"], "")
+	if mk != "":
+		var mdl = _make_model(mk)
+		if mdl != null:
+			parts_root.add_child(mdl["node"])
+			muzzle.position = mdl["muzzle"]
+			return
+	var g: Dictionary = GUNS[WeaponDB.W[wid]["s"]]
+	for p in g["p"]:
+		var m := _box_mesh(p[0], _mat(p[2]))
+		m.position = p[1]
+		parts_root.add_child(m)
+	muzzle.position = Vector3(0, 0.01, g["m"])
 
 
 func head_y() -> float:
@@ -112,7 +382,43 @@ func apply_stance() -> void:
 	body_mesh.position.y = h * 0.5
 	head_area.position.y = HEAD_Y[stance]
 	head_mesh.position.y = HEAD_Y[stance]
-	gun_mesh.position = Vector3(0.3, HEAD_Y[stance] - 0.35, -0.45)
+	rig.position = Vector3(0.0, HEAD_Y[stance] - 0.35, 0.0)
+
+
+func _play(s: AudioStream, db: float = 0.0, pv: float = 0.05) -> void:
+	if s == null or pool.is_empty():
+		return
+	var p: AudioStreamPlayer3D = pool[pool_i]
+	pool_i = (pool_i + 1) % pool.size()
+	p.stream = s
+	p.volume_db = db
+	p.pitch_scale = 1.0 + randf_range(-pv, pv)
+	p.play()
+
+
+func _fx(pos: Vector3, col: Color, size: float, life: float) -> void:
+	var m := MeshInstance3D.new()
+	var s := SphereMesh.new()
+	s.radius = size
+	s.height = size * 2.0
+	m.mesh = s
+	m.material_override = _glow(col)
+	get_parent().add_child(m)
+	m.global_position = pos
+	get_tree().create_timer(life).timeout.connect(m.queue_free)
+
+
+func _tracer(a: Vector3, b: Vector3) -> void:
+	var l := a.distance_to(b)
+	if l < 0.6:
+		return
+	var dir := (b - a).normalized()
+	var shown := minf(l, 40.0)
+	var m := _box_mesh(Vector3(0.025, 0.025, shown), _glow(Color(1.0, 0.9, 0.5)))
+	get_parent().add_child(m)
+	var up := Vector3.UP if absf(dir.y) < 0.99 else Vector3.RIGHT
+	m.look_at_from_position(a + dir * shown * 0.5, b, up)
+	get_tree().create_timer(0.05).timeout.connect(m.queue_free)
 
 
 func reset(pos: Vector3, y: float) -> void:
@@ -127,7 +433,7 @@ func reset(pos: Vector3, y: float) -> void:
 	velocity = Vector3.ZERO
 	cd = 0.0
 	rl = 0.0
-	bloom = 0.0
+	kick = 0.0
 	move_input = Vector2.ZERO
 	want_fire = false
 	want_jump = false
@@ -139,18 +445,19 @@ func reset(pos: Vector3, y: float) -> void:
 func reload() -> void:
 	if rl <= 0.0 and mag < WeaponDB.W[wid]["mag"]:
 		rl = WeaponDB.W[wid]["rl"]
+		_play(_snd(RELOAD_NAME[WeaponDB.W[wid]["s"]], "reload"), -4.0, 0.02)
 
 
 func hurt(dmg: int, by, head: bool) -> void:
 	if not alive:
 		return
-	var red: float = HELM_RED[helmet] if head else VEST_RED[vest]
-	dmg = maxi(1, int(round(float(dmg) * (1.0 - red))))
 	hp -= dmg
+	_play(_snd("headshot") if head else _snd("hit"), -6.0 if is_bot else -2.0, 0.03)
 	hit_info.emit(by, self, dmg, head)
 	if hp <= 0:
 		hp = 0
 		alive = false
+		_play(_snd("death"), -2.0, 0.05)
 		visible = false
 		body_col.set_deferred("disabled", true)
 		head_col.set_deferred("disabled", true)
@@ -162,67 +469,46 @@ func try_fire() -> void:
 		return
 	var w: Dictionary = WeaponDB.W[wid]
 	if mag <= 0:
+		_play(_snd("dry"), -6.0, 0.02)
+		cd = 0.3
 		reload()
 		return
 	mag -= 1
 	cd = w["rate"] * (1.8 if is_bot else 1.0)
+	kick = minf(kick + float(w["rc"]), 3.0)
+	flash_t = 0.05
+	_play(_snd("shot_" + str(w["s"])), -1.0, 0.04)
 	var from := origin_override if use_origin else eye()
-	var muzzle := gun_mesh.global_position
 	var space := get_world_3d().direct_space_state
-	var rng: float = w["range"]
-	var sp: float = (float(w["spread"]) + bloom) * STANCE_SPREAD[stance] * (1.0 + move_input.length() * 0.8) * (3.0 if is_bot else 1.0)
+	var mpos := muzzle.global_position
 	for i in range(int(w["pel"])):
+		var sp: float = w["spread"] * (3.0 if is_bot else 1.0)
 		var d := (aim_dir + Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)) * sp).normalized()
-		var far := from + d * 150.0
-		var q := PhysicsRayQueryParameters3D.create(from, far, 7, [get_rid(), head_area.get_rid()])
+		var q := PhysicsRayQueryParameters3D.create(from, from + d * 120.0, 7, [get_rid(), head_area.get_rid()])
 		q.collide_with_areas = true
 		var r := space.intersect_ray(q)
-		var end := far
-		if not r.is_empty():
-			end = r["position"]
-			var c = r["collider"]
-			var tgt = null
-			var head := false
-			if c is Area3D:
-				tgt = c.get_parent()
-				head = true
-			elif c.has_method("hurt"):
-				tgt = c
-			if tgt != null and tgt.has_method("hurt") and tgt.alive and tgt.team != team:
-				var dist := from.distance_to(end)
-				var fall := 1.0
-				if dist > rng:
-					fall = maxf(0.35, 1.0 - (dist - rng) / rng)
-				var hm: float = float(w["head"]) if head else 1.0
-				var dmg := int(float(w["dmg"]) * hm * fall * (0.5 if is_bot else 1.0))
-				tgt.hurt(dmg, self, head)
+		if r.is_empty():
+			if i < 2:
+				_tracer(mpos, from + d * 120.0)
+			continue
+		var hp_pos: Vector3 = r["position"]
 		if i < 2:
-			_tracer(muzzle, end)
-	bloom = minf(bloom + float(w["recoil"]) * 0.15, 0.02)
-	if not is_bot:
-		pitch = clampf(pitch + float(w["recoil"]) * 0.7 * randf_range(0.8, 1.2), -1.0, 1.0)
-		yaw += randf_range(-0.5, 0.5) * float(w["recoil"]) * 0.7
-
-
-func _tracer(a: Vector3, b: Vector3) -> void:
-	var dist := a.distance_to(b)
-	if dist < 0.5 or get_parent() == null:
-		return
-	var m := MeshInstance3D.new()
-	var bm := BoxMesh.new()
-	bm.size = Vector3(0.03, 0.03, dist)
-	m.mesh = bm
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(1.0, 0.85, 0.4, 1.0)
-	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	m.material_override = mat
-	get_parent().add_child(m)
-	m.global_position = (a + b) * 0.5
-	m.look_at(b, Vector3.UP)
-	var tw := m.create_tween()
-	tw.tween_property(mat, "albedo_color:a", 0.0, 0.08)
-	tw.tween_callback(m.queue_free)
+			_tracer(mpos, hp_pos)
+		var c = r["collider"]
+		var tgt = null
+		var head := false
+		if c is Area3D:
+			tgt = c.get_parent()
+			head = true
+		elif c.has_method("hurt"):
+			tgt = c
+		if tgt != null and tgt.has_method("hurt"):
+			_fx(hp_pos, Color(1.0, 0.2, 0.15), 0.12 if head else 0.08, 0.12)
+			if tgt.alive and tgt.team != team:
+				var dmg := int(float(w["dmg"]) * (2.4 if head else 1.0) * (0.5 if is_bot else 1.0))
+				tgt.hurt(dmg, self, head)
+		else:
+			_fx(hp_pos + r["normal"] * 0.03, Color(1.0, 0.7, 0.25), 0.06, 0.1)
 
 
 func _physics_process(delta: float) -> void:
@@ -232,7 +518,6 @@ func _physics_process(delta: float) -> void:
 		last_stance = stance
 		apply_stance()
 	cd -= delta
-	bloom = move_toward(bloom, 0.0, delta * 0.05)
 	if rl > 0.0:
 		rl -= delta
 		if rl <= 0.0:
@@ -252,3 +537,22 @@ func _physics_process(delta: float) -> void:
 	rotation.y = yaw
 	if want_fire:
 		try_fire()
+	# animatsiya va effektlar
+	kick = move_toward(kick, 0.0, delta * 12.0)
+	flash_t -= delta
+	flash_mesh.visible = flash_t > 0.0
+	flash_light.visible = flash_t > 0.0
+	var moving := move_input.length() > 0.1 and is_on_floor()
+	if moving:
+		walk_t += delta * (9.0 if stance == 0 else 5.0)
+		step_t -= delta
+		if step_t <= 0.0 and stance == 0:
+			step_t = 0.34
+			_play(_snd("step"), -10.0, 0.12)
+	var bob := sin(walk_t) * 0.012 if moving else sin(Time.get_ticks_msec() * 0.002) * 0.004
+	var tilt := 0.0
+	if rl > 0.0:
+		var prog := 1.0 - rl / float(WeaponDB.W[wid]["rl"])
+		tilt = -0.75 * sin(clampf(prog, 0.0, 1.0) * PI)
+	gun_root.rotation.x = kick * 0.05 + tilt
+	gun_root.position = Vector3(0.22, bob, -0.15 + kick * 0.04)

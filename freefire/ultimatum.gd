@@ -29,14 +29,22 @@ var stick_vec := Vector2.ZERO
 var look_id := -1
 var btn_ids := {}
 var touch_fire := false
+var sfx2d: AudioStreamPlayer
 
 
 func _ready() -> void:
 	randomize()
 	DisplayServer.screen_set_orientation(DisplayServer.SCREEN_LANDSCAPE)
+	sfx2d = AudioStreamPlayer.new()
+	add_child(sfx2d)
 	_build_world()
 	_build_ui()
 	_show_menu("ZONA: ULTIMATUM")
+
+
+func _ld(n: String):
+	var p := "res://freefire/audio/%s.wav" % n
+	return load(p) if ResourceLoader.exists(p) else null
 
 
 # ---------- dunyo ----------
@@ -275,6 +283,10 @@ func _check_round() -> void:
 
 func _on_hit(attacker, _target, dmg: int, head: bool) -> void:
 	if attacker == player and state == S.LIVE:
+		sfx2d.stream = _ld("headshot" if head else "hit")
+		sfx2d.volume_db = -3.0
+		if sfx2d.stream != null:
+			sfx2d.play()
 		_msg(("HEADSHOT! " if head else "") + str(dmg), 0.8)
 
 
@@ -354,6 +366,7 @@ func _update_cam() -> void:
 	p.aim_dir = d
 	var right := Vector3(cos(p.yaw), 0.0, -sin(p.yaw))
 	var pos: Vector3 = p.eye() - d * 3.0 + right * 0.6 + Vector3.UP * 0.3
+	pos += Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)) * p.kick * 0.012
 	pos.y = maxf(pos.y, 0.3)
 	cam.global_transform = Transform3D(Basis.from_euler(Vector3(p.pitch, p.yaw, 0.0)), pos)
 	p.origin_override = pos
