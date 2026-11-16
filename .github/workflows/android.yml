@@ -65,6 +65,17 @@ jobs:
           sed -i "s|^export_files=.*|export_files=PackedStringArray($LIST)|" export_presets.cfg
           grep -n "export_files" export_presets.cfg | cut -c1-300
 
+      - name: Patch project for Android (ETC2/ASTC)
+        run: |
+          if ! grep -q "import_etc2_astc" project.godot; then
+            if grep -q '^\[rendering\]' project.godot; then
+              sed -i '/^\[rendering\]/a textures/vram_compression/import_etc2_astc=true' project.godot
+            else
+              printf '\n[rendering]\n\ntextures/vram_compression/import_etc2_astc=true\n' >> project.godot
+            fi
+          fi
+          grep -n -B1 -A1 "import_etc2_astc" project.godot
+
       - name: Import resources
         run: godot --headless --verbose --editor --quit || true
 
