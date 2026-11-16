@@ -37,6 +37,14 @@ jobs:
           apt-get update -qq
           apt-get install -y -qq imagemagick ffmpeg
 
+      - name: Install Android SDK 35 (Godot 4.6 talabi)
+        run: |
+          SDKM=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager | head -1)
+          echo "sdkmanager: $SDKM"
+          yes | "$SDKM" --sdk_root="$ANDROID_HOME" --licenses > /dev/null || true
+          "$SDKM" --sdk_root="$ANDROID_HOME" "platform-tools" "build-tools;35.0.1" "platforms;android-35"
+          ls "$ANDROID_HOME/build-tools" "$ANDROID_HOME/platforms"
+
       - name: Slim assets (textures and audio)
         run: |
           if [ -d freefire/models ]; then
@@ -66,7 +74,7 @@ jobs:
           echo "===== DIAGNOSTIKA ====="
           echo "ANDROID_HOME=$ANDROID_HOME ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT JAVA_HOME=$JAVA_HOME"
           ls $ANDROID_SDK_ROOT $ANDROID_HOME 2>/dev/null || true
-          ls $ANDROID_SDK_ROOT/build-tools $ANDROID_SDK_ROOT/platforms 2>/dev/null || true
+          ls $ANDROID_HOME/build-tools $ANDROID_HOME/platforms 2>/dev/null || true
           ls ~/.local/share/godot/export_templates/*/ 2>/dev/null | head -40 || true
           grep -i "android\|java\|keystore" ~/.config/godot/editor_settings-4.6.tres 2>/dev/null || true
           ls -la /root/*.keystore ~/*.keystore 2>/dev/null || true
