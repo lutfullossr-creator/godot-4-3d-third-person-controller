@@ -490,7 +490,8 @@ jobs:
           else
             printf '\n[debug]\n\nfile_logging/enable_file_logging=true\nfile_logging/enable_file_logging.mobile=true\n' >> project.godot
           fi
-          grep -n -B1 -A1 "import_etc2_astc\|file_logging" project.godot
+          sed -i '/^\[debug\]/a gdscript/warnings/enable=false' project.godot
+          grep -n -B1 -A1 "import_etc2_astc\|file_logging\|warnings" project.godot
 
       - name: Import resources
         run: godot --headless --verbose --editor --quit || true
