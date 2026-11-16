@@ -59,7 +59,7 @@ jobs:
           fi
           if [ -d freefire/audio ]; then
             find freefire/audio -iname '*.wav' | while read -r f; do
-              ffmpeg -y -loglevel error -i "$f" -c:a libvorbis -q:a 6 "${f%.*}.ogg" && rm "$f"
+              ffmpeg -nostdin -y -loglevel error -i "$f" -c:a libvorbis -q:a 6 "${f%.*}.ogg" && rm "$f"
             done
           fi
 
