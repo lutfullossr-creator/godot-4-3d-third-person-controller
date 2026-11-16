@@ -57,9 +57,109 @@ jobs:
             done
           fi
 
+      - name: Create boot loader (loading screen)
+        run: |
+          mkdir -p freefire
+          cat > freefire/boot.gd <<'EOF'
+          extends Node
+
+          const MAIN := "res://freefire/ultimatum.tscn"
+
+          var lbl: Label
+          var bar: ProgressBar
+          var done := false
+          var t := 0.0
+
+
+          func _ready() -> void:
+              DisplayServer.screen_set_orientation(DisplayServer.SCREEN_LANDSCAPE)
+              var ui := CanvasLayer.new()
+              add_child(ui)
+              var bg := ColorRect.new()
+              bg.color = Color(0.06, 0.07, 0.09)
+              bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+              ui.add_child(bg)
+              var box := VBoxContainer.new()
+              box.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+              box.alignment = BoxContainer.ALIGNMENT_CENTER
+              box.add_theme_constant_override("separation", 24)
+              ui.add_child(box)
+              lbl = Label.new()
+              lbl.add_theme_font_size_override("font_size", 40)
+              lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+              lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+              lbl.custom_minimum_size = Vector2(1500, 0)
+              lbl.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+              lbl.text = "ZONA yuklanmoqda..."
+              box.add_child(lbl)
+              bar = ProgressBar.new()
+              bar.custom_minimum_size = Vector2(700, 30)
+              bar.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+              box.add_child(bar)
+              if not ResourceLoader.exists(MAIN):
+                  _fail("Sahna topilmadi: " + MAIN + "\n\nfreefire papkasi: " + _ls("res://freefire"))
+                  return
+              ResourceLoader.load_threaded_request(MAIN)
+
+
+          func _ls(p: String) -> String:
+              var d := DirAccess.open(p)
+              if d == null:
+                  return "(ochilmadi)"
+              var out := ""
+              for n in d.get_directories():
+                  out += n + "/  "
+              for n in d.get_files():
+                  out += n + "  "
+              return out
+
+
+          func _fail(msg: String) -> void:
+              done = true
+              bar.visible = false
+              lbl.text = "XATO\n" + msg
+
+
+          func _process(delta: float) -> void:
+              if done:
+                  return
+              t += delta
+              var prog: Array = []
+              var st := ResourceLoader.load_threaded_get_status(MAIN, prog)
+              if st == ResourceLoader.THREAD_LOAD_IN_PROGRESS:
+                  if prog.size() > 0:
+                      bar.value = float(prog[0]) * 100.0
+                  lbl.text = "ZONA yuklanmoqda... %d%%  (%d s)" % [int(bar.value), int(t)]
+              elif st == ResourceLoader.THREAD_LOAD_LOADED:
+                  done = true
+                  var ps := ResourceLoader.load_threaded_get(MAIN) as PackedScene
+                  if ps == null:
+                      _fail("Sahna yuklandi, lekin PackedScene emas: " + MAIN)
+                  else:
+                      _start(ps)
+              else:
+                  _fail("Yuklab bolmadi (skript yoki resurs xatosi): " + MAIN)
+
+
+          func _start(ps: PackedScene) -> void:
+              lbl.text = "Boshlanmoqda..."
+              bar.value = 100.0
+              await get_tree().process_frame
+              await get_tree().process_frame
+              get_tree().change_scene_to_packed(ps)
+          EOF
+          cat > freefire/boot.tscn <<'EOF'
+          [gd_scene load_steps=2 format=3]
+
+          [ext_resource type="Script" path="res://freefire/boot.gd" id="1"]
+
+          [node name="Boot" type="Node"]
+          script = ExtResource("1")
+          EOF
+
       - name: Slim project (only our game)
         run: |
-          sed -i 's|^run/main_scene=.*|run/main_scene="res://freefire/ultimatum.tscn"|' project.godot
+          sed -i 's|^run/main_scene=.*|run/main_scene="res://freefire/boot.tscn"|' project.godot
           awk '/^\[autoload\]/{skip=1;next} /^\[/{skip=0} !skip' project.godot > project.tmp && mv project.tmp project.godot
           LIST=$(find freefire -type f \( -name '*.gd' -o -name '*.tscn' -o -iname '*.png' -o -iname '*.fbx' -o -iname '*.glb' -o -iname '*.ogg' -o -iname '*.wav' \) | sed 's|^|"res://|; s|$|"|' | paste -sd, -)
           sed -i "s|^export_files=.*|export_files=PackedStringArray($LIST)|" export_presets.cfg
