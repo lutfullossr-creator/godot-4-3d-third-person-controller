@@ -93,6 +93,9 @@ jobs:
               DisplayServer.screen_set_orientation(DisplayServer.SCREEN_LANDSCAPE)
               cur_run = BI.RUN
               _build_ui()
+              var dbg = load("res://freefire/dbg.gd")
+              if dbg != null and dbg.can_instantiate():
+                  get_tree().root.add_child.call_deferred(dbg.new())
               _load_cached_patch()
               _check_update()
 
@@ -330,6 +333,57 @@ jobs:
           [node name="Boot" type="Node"]
           script = ExtResource("1")
           EOF
+          cat > freefire/dbg.gd <<'EOF'
+          extends CanvasLayer
+
+          var lbl: Label
+          var acc := 0.0
+          var tt := 0.0
+
+
+          func _ready() -> void:
+              layer = 100
+              lbl = Label.new()
+              lbl.position = Vector2(10, 6)
+              lbl.add_theme_font_size_override("font_size", 22)
+              lbl.add_theme_color_override("font_color", Color(1.0, 0.9, 0.3))
+              lbl.add_theme_color_override("font_outline_color", Color.BLACK)
+              lbl.add_theme_constant_override("outline_size", 6)
+              lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+              add_child(lbl)
+
+
+          func _process(delta: float) -> void:
+              tt += delta
+              acc += delta
+              if acc < 0.5:
+                  return
+              acc = 0.0
+              var sc := get_tree().current_scene
+              var nm := "-"
+              if sc != null:
+                  nm = str(sc.name)
+              lbl.text = "t=%d  FPS=%d  sahna=%s\n%s" % [int(tt), int(Engine.get_frames_per_second()), nm, _errors()]
+
+
+          func _errors() -> String:
+              var p := "user://logs/godot.log"
+              if not FileAccess.file_exists(p):
+                  return "(log fayli yo'q)"
+              var f := FileAccess.open(p, FileAccess.READ)
+              if f == null:
+                  return "(log ochilmadi)"
+              var n := f.get_length()
+              if n > 16000:
+                  f.seek(n - 16000)
+              var txt := f.get_as_text()
+              var out: Array = []
+              for ln in txt.split("\n"):
+                  if ln.contains("ERROR") or ln.contains("SCRIPT") or ln.contains("Parse") or ln.contains("at: "):
+                      out.append(ln.strip_edges().left(120))
+              var st := maxi(0, out.size() - 8)
+              return "\n".join(PackedStringArray(out.slice(st)))
+          EOF
           cat > /tmp/ult.tscn <<'EOF'
           [gd_scene load_steps=2 format=3]
 
@@ -417,7 +471,7 @@ jobs:
           EOF
           grep -n "export_files" export_presets.cfg | cut -c1-400
 
-      - name: Patch project for Android (ETC2/ASTC)
+      - name: Patch project for Android (ETC2/ASTC va log)
         run: |
           if ! grep -q "import_etc2_astc" project.godot; then
             if grep -q '^\[rendering\]' project.godot; then
@@ -426,7 +480,12 @@ jobs:
               printf '\n[rendering]\n\ntextures/vram_compression/import_etc2_astc=true\n' >> project.godot
             fi
           fi
-          grep -n -B1 -A1 "import_etc2_astc" project.godot
+          if grep -q '^\[debug\]' project.godot; then
+            sed -i -e '/^\[debug\]/a file_logging/enable_file_logging.mobile=true' -e '/^\[debug\]/a file_logging/enable_file_logging=true' project.godot
+          else
+            printf '\n[debug]\n\nfile_logging/enable_file_logging=true\nfile_logging/enable_file_logging.mobile=true\n' >> project.godot
+          fi
+          grep -n -B1 -A1 "import_etc2_astc\|file_logging" project.godot
 
       - name: Import resources
         run: godot --headless --verbose --editor --quit || true
@@ -450,28 +509,3 @@ jobs:
           "$BT/aapt2" dump badging build/android/zona.apk | grep -E "^package:|sdkVersion|targetSdk|native-code|uses-feature|launchable|application-label:" | head -30
 
       - name: Build patch (kod va sahnalar, kichik)
-        continue-on-error: true
-        run: |
-          godot --headless --verbose --export-pack "Patch" build/patch.pck
-          test -s build/patch.pck
-          ls -la build
-          printf '{"run": %s, "assets": "%s"}\n' "$RUN" "$ASSETS" > build/latest.json
-          cat build/latest.json
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: zona-apk
-          path: |
-            build/android/zona.apk
-            build/patch.pck
-
-      - name: Publish release (doimiy havola)
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: latest
-          name: ZONA (oxirgi versiya)
-          make_latest: true
-          files: |
-            build/android/zona.apk
-            build/patch.pck
-            build/latest.json
