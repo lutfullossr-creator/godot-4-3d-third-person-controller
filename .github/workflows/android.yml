@@ -30,7 +30,6 @@ jobs:
           if [ -d /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable ]; then
             cp -r /root/.local/share/godot/export_templates/${GODOT_VERSION}.stable ~/.local/share/godot/export_templates/
           fi
-          ls -la ~/.config/godot ~/.local/share/godot/export_templates/ || true
 
       - name: Install tools
         run: |
@@ -45,6 +44,13 @@ jobs:
           "$SDKM" --sdk_root="$ANDROID_HOME" "platform-tools" "build-tools;35.0.1" "platforms;android-35"
           ls "$ANDROID_HOME/build-tools" "$ANDROID_HOME/platforms"
 
+      - name: Version info (assets hash va build raqami)
+        run: |
+          ASSETS=$( { find freefire -type f ! -name '*.gd' ! -name '*.tscn' -print0 2>/dev/null | sort -z | xargs -0 -r sha1sum; sha1sum .github/workflows/android.yml project.godot; } | sha1sum | cut -c1-12 )
+          echo "ASSETS=$ASSETS" >> "$GITHUB_ENV"
+          echo "RUN=${{ github.run_number }}" >> "$GITHUB_ENV"
+          echo "assets hash: $ASSETS  run: ${{ github.run_number }}"
+
       - name: Slim assets (textures and audio)
         run: |
           if [ -d freefire/models ]; then
@@ -57,22 +63,41 @@ jobs:
             done
           fi
 
-      - name: Create boot loader (loading screen)
+      - name: Create boot loader (loading screen + auto patch)
         run: |
           mkdir -p freefire
+          cat > freefire/build_info.gd <<EOF
+          extends RefCounted
+          const RUN := ${RUN}
+          const ASSETS := "${ASSETS}"
+          EOF
           cat > freefire/boot.gd <<'EOF'
           extends Node
 
+          const BI = preload("res://freefire/build_info.gd")
           const MAIN := "res://freefire/ultimatum.tscn"
+          const BASE_URL := "https://github.com/lutfullossr-creator/godot-4-3d-third-person-controller/releases/latest/download/"
+          const INFO := "user://patch_info.json"
 
           var lbl: Label
           var bar: ProgressBar
-          var done := false
+          var row: HBoxContainer
+          var http: HTTPRequest
+          var state := "init"
           var t := 0.0
+          var cur_run := 0
+          var remote_run := 0
 
 
           func _ready() -> void:
               DisplayServer.screen_set_orientation(DisplayServer.SCREEN_LANDSCAPE)
+              cur_run = BI.RUN
+              _build_ui()
+              _load_cached_patch()
+              _check_update()
+
+
+          func _build_ui() -> void:
               var ui := CanvasLayer.new()
               add_child(ui)
               var bg := ColorRect.new()
@@ -96,10 +121,154 @@ jobs:
               bar.custom_minimum_size = Vector2(700, 30)
               bar.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
               box.add_child(bar)
+              row = HBoxContainer.new()
+              row.alignment = BoxContainer.ALIGNMENT_CENTER
+              row.add_theme_constant_override("separation", 30)
+              box.add_child(row)
+
+
+          func _buttons(items: Array) -> void:
+              for c in row.get_children():
+                  c.queue_free()
+              for it in items:
+                  var b := Button.new()
+                  b.text = it[0]
+                  b.custom_minimum_size = Vector2(420, 90)
+                  b.add_theme_font_size_override("font_size", 32)
+                  b.pressed.connect(it[1])
+                  row.add_child(b)
+
+
+          func _read_json(p: String) -> Dictionary:
+              if not FileAccess.file_exists(p):
+                  return {}
+              var f := FileAccess.open(p, FileAccess.READ)
+              if f == null:
+                  return {}
+              var v = JSON.parse_string(f.get_as_text())
+              if v is Dictionary:
+                  return v
+              return {}
+
+
+          func _write_json(p: String, d: Dictionary) -> void:
+              var f := FileAccess.open(p, FileAccess.WRITE)
+              if f != null:
+                  f.store_string(JSON.stringify(d))
+
+
+          # Oldin yuklangan yamoqni (agar shu APK ga mos bo'lsa) qo'llash
+          func _load_cached_patch() -> void:
+              var info := _read_json(INFO)
+              var keep := str(info.get("file", ""))
+              var d := DirAccess.open("user://")
+              if d == null:
+                  return
+              for f in d.get_files():
+                  if f.begins_with("patch_") and f.ends_with(".pck") and f != keep:
+                      d.remove(f)
+              if keep == "":
+                  return
+              var ok := str(info.get("assets", "")) == BI.ASSETS and int(info.get("run", 0)) >= BI.RUN and FileAccess.file_exists("user://" + keep)
+              if ok and ProjectSettings.load_resource_pack("user://" + keep, true):
+                  cur_run = int(info["run"])
+              else:
+                  d.remove(keep)
+                  d.remove("patch_info.json")
+
+
+          func _check_update() -> void:
+              state = "check"
+              lbl.text = "Yangilanish tekshirilmoqda..."
+              http = HTTPRequest.new()
+              http.timeout = 8.0
+              add_child(http)
+              http.request_completed.connect(_on_info)
+              if http.request(BASE_URL + "latest.json") != OK:
+                  http.queue_free()
+                  http = null
+                  _continue()
+
+
+          func _on_info(result: int, code: int, _h: PackedStringArray, body: PackedByteArray) -> void:
+              http.queue_free()
+              http = null
+              if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+                  _continue()
+                  return
+              var v = JSON.parse_string(body.get_string_from_utf8())
+              if not (v is Dictionary):
+                  _continue()
+                  return
+              remote_run = int(v.get("run", 0))
+              if str(v.get("assets", "")) != BI.ASSETS:
+                  _need_apk()
+              elif remote_run > cur_run:
+                  _download_patch()
+              else:
+                  _continue()
+
+
+          func _need_apk() -> void:
+              state = "apk"
+              bar.visible = false
+              lbl.text = "Yangi versiya: model/ovoz yoki asosiy fayllar o'zgargan.\nAPK ni qayta o'rnatish kerak."
+              _buttons([["APK yuklash", _open_apk], ["Hozircha davom etish", _continue]])
+
+
+          func _open_apk() -> void:
+              OS.shell_open(BASE_URL + "zona.apk")
+
+
+          func _download_patch() -> void:
+              state = "download"
+              bar.value = 0
+              lbl.text = "Yangilanish yuklanmoqda..."
+              http = HTTPRequest.new()
+              http.download_file = "user://patch_dl.pck"
+              http.timeout = 180.0
+              add_child(http)
+              http.request_completed.connect(_on_patch)
+              if http.request(BASE_URL + "patch.pck") != OK:
+                  http.queue_free()
+                  http = null
+                  _continue()
+
+
+          func _on_patch(result: int, code: int, _h: PackedStringArray, _b: PackedByteArray) -> void:
+              http.queue_free()
+              http = null
+              var d := DirAccess.open("user://")
+              if result != HTTPRequest.RESULT_SUCCESS or code != 200 or d == null:
+                  if d != null:
+                      d.remove("patch_dl.pck")
+                  lbl.text = "Yangilanish yuklanmadi, joriy versiya ishga tushadi"
+                  await get_tree().create_timer(1.5).timeout
+                  _continue()
+                  return
+              var fname := "patch_%d.pck" % remote_run
+              if d.file_exists(fname):
+                  d.remove(fname)
+              d.rename("patch_dl.pck", fname)
+              if ProjectSettings.load_resource_pack("user://" + fname, true):
+                  cur_run = remote_run
+                  _write_json(INFO, {"run": remote_run, "assets": BI.ASSETS, "file": fname})
+              else:
+                  d.remove(fname)
+              _continue()
+
+
+          func _continue() -> void:
+              for c in row.get_children():
+                  c.queue_free()
+              bar.visible = true
+              bar.value = 0
+              lbl.text = "ZONA yuklanmoqda..."
               if not ResourceLoader.exists(MAIN):
                   _fail("Sahna topilmadi: " + MAIN + "\n\nfreefire papkasi: " + _ls("res://freefire"))
                   return
               ResourceLoader.load_threaded_request(MAIN)
+              state = "load"
 
 
           func _ls(p: String) -> String:
@@ -115,30 +284,35 @@ jobs:
 
 
           func _fail(msg: String) -> void:
-              done = true
+              state = "fail"
               bar.visible = false
               lbl.text = "XATO\n" + msg
 
 
           func _process(delta: float) -> void:
-              if done:
-                  return
               t += delta
-              var prog: Array = []
-              var st := ResourceLoader.load_threaded_get_status(MAIN, prog)
-              if st == ResourceLoader.THREAD_LOAD_IN_PROGRESS:
-                  if prog.size() > 0:
-                      bar.value = float(prog[0]) * 100.0
-                  lbl.text = "ZONA yuklanmoqda... %d%%  (%d s)" % [int(bar.value), int(t)]
-              elif st == ResourceLoader.THREAD_LOAD_LOADED:
-                  done = true
-                  var ps := ResourceLoader.load_threaded_get(MAIN) as PackedScene
-                  if ps == null:
-                      _fail("Sahna yuklandi, lekin PackedScene emas: " + MAIN)
+              if state == "download" and http != null and is_instance_valid(http):
+                  var total := http.get_body_size()
+                  var got := http.get_downloaded_bytes()
+                  if total > 0:
+                      bar.value = float(got) * 100.0 / float(total)
+                  lbl.text = "Yangilanish yuklanmoqda... %d%%  (%.1f MB)" % [int(bar.value), float(got) / 1048576.0]
+              elif state == "load":
+                  var prog: Array = []
+                  var st := ResourceLoader.load_threaded_get_status(MAIN, prog)
+                  if st == ResourceLoader.THREAD_LOAD_IN_PROGRESS:
+                      if prog.size() > 0:
+                          bar.value = float(prog[0]) * 100.0
+                      lbl.text = "ZONA yuklanmoqda... %d%%  (v%d)" % [int(bar.value), cur_run]
+                  elif st == ResourceLoader.THREAD_LOAD_LOADED:
+                      state = "start"
+                      var ps := ResourceLoader.load_threaded_get(MAIN) as PackedScene
+                      if ps == null:
+                          _fail("Sahna yuklandi, lekin PackedScene emas: " + MAIN)
+                      else:
+                          _start(ps)
                   else:
-                      _start(ps)
-              else:
-                  _fail("Yuklab bolmadi (skript yoki resurs xatosi): " + MAIN)
+                      _fail("Yuklab bo'lmadi (skript yoki resurs xatosi): " + MAIN)
 
 
           func _start(ps: PackedScene) -> void:
@@ -156,14 +330,92 @@ jobs:
           [node name="Boot" type="Node"]
           script = ExtResource("1")
           EOF
+          cat > /tmp/ult.tscn <<'EOF'
+          [gd_scene load_steps=2 format=3]
 
-      - name: Slim project (only our game)
+          [ext_resource type="Script" path="res://freefire/game.gd" id="1"]
+
+          [node name="Ultimatum" type="Node3D"]
+          script = ExtResource("1")
+          EOF
+          [ -f freefire/ultimatum.tscn ] || cp /tmp/ult.tscn freefire/ultimatum.tscn
+          ls -la freefire
+
+      - name: Slim project and write export presets
         run: |
           sed -i 's|^run/main_scene=.*|run/main_scene="res://freefire/boot.tscn"|' project.godot
           awk '/^\[autoload\]/{skip=1;next} /^\[/{skip=0} !skip' project.godot > project.tmp && mv project.tmp project.godot
-          LIST=$(find freefire -type f \( -name '*.gd' -o -name '*.tscn' -o -iname '*.png' -o -iname '*.fbx' -o -iname '*.glb' -o -iname '*.ogg' -o -iname '*.wav' \) | sed 's|^|"res://|; s|$|"|' | paste -sd, -)
-          sed -i "s|^export_files=.*|export_files=PackedStringArray($LIST)|" export_presets.cfg
-          grep -n "export_files" export_presets.cfg | cut -c1-300
+          APK_LIST=$(find freefire -type f \( -name '*.gd' -o -name '*.tscn' -o -iname '*.png' -o -iname '*.fbx' -o -iname '*.glb' -o -iname '*.ogg' -o -iname '*.wav' \) | sed 's|^|"res://|; s|$|"|' | paste -sd, -)
+          PATCH_LIST=$(find freefire -type f \( -name '*.gd' -o -name '*.tscn' \) ! -name 'boot.*' ! -name 'build_info.gd' | sed 's|^|"res://|; s|$|"|' | paste -sd, -)
+          OPTS='custom_template/debug=""
+          custom_template/release=""
+          gradle_build/use_gradle_build=false
+          architectures/armeabi-v7a=false
+          architectures/arm64-v8a=true
+          architectures/x86=false
+          architectures/x86_64=false
+          version/code=1
+          version/name="1.0"
+          package/unique_name="com.lutfullossr.zona"
+          package/name="ZONA"
+          package/signed=true
+          keystore/release="/root/debug.keystore"
+          keystore/release_user="androiddebugkey"
+          keystore/release_password="android"
+          screen/immersive_mode=true
+          screen/support_small=true
+          screen/support_normal=true
+          screen/support_large=true
+          screen/support_xlarge=true
+          permissions/internet=true
+          permissions/access_network_state=true
+          permissions/access_wifi_state=true'
+          cat > export_presets.cfg <<EOF
+          [preset.0]
+
+          name="Android"
+          platform="Android"
+          runnable=true
+          advanced_options=false
+          dedicated_server=false
+          custom_features=""
+          export_filter="scenes"
+          export_files=PackedStringArray($APK_LIST)
+          include_filter=""
+          exclude_filter=""
+          export_path="build/android/zona.apk"
+          encryption_include_filters=""
+          encryption_exclude_filters=""
+          encrypt_pck=false
+          encrypt_directory=false
+
+          [preset.0.options]
+
+          $OPTS
+
+          [preset.1]
+
+          name="Patch"
+          platform="Android"
+          runnable=false
+          advanced_options=false
+          dedicated_server=false
+          custom_features=""
+          export_filter="scenes"
+          export_files=PackedStringArray($PATCH_LIST)
+          include_filter=""
+          exclude_filter=""
+          export_path="build/patch.pck"
+          encryption_include_filters=""
+          encryption_exclude_filters=""
+          encrypt_pck=false
+          encrypt_directory=false
+
+          [preset.1.options]
+
+          $OPTS
+          EOF
+          grep -n "export_files" export_presets.cfg | cut -c1-400
 
       - name: Patch project for Android (ETC2/ASTC)
         run: |
@@ -182,26 +434,32 @@ jobs:
       - name: Build APK
         run: |
           mkdir -v -p build/android
-          echo "===== DIAGNOSTIKA ====="
-          echo "ANDROID_HOME=$ANDROID_HOME ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT JAVA_HOME=$JAVA_HOME"
-          ls $ANDROID_SDK_ROOT $ANDROID_HOME 2>/dev/null || true
-          ls $ANDROID_HOME/build-tools $ANDROID_HOME/platforms 2>/dev/null || true
-          ls ~/.local/share/godot/export_templates/*/ 2>/dev/null | head -40 || true
-          grep -i "android\|java\|keystore" ~/.config/godot/editor_settings-4.6.tres 2>/dev/null || true
-          ls -la /root/*.keystore ~/*.keystore 2>/dev/null || true
-          echo "===== DIAGNOSTIKA TUGADI ====="
           godot --headless --verbose --export-debug "Android" build/android/zona.apk
           ls -la build/android
+
+      - name: Build patch (kod va sahnalar, kichik)
+        continue-on-error: true
+        run: |
+          godot --headless --verbose --export-pack "Patch" build/patch.pck
+          test -s build/patch.pck
+          ls -la build
+          printf '{"run": %s, "assets": "%s"}\n' "$RUN" "$ASSETS" > build/latest.json
+          cat build/latest.json
 
       - uses: actions/upload-artifact@v4
         with:
           name: zona-apk
-          path: build/android/zona.apk
+          path: |
+            build/android/zona.apk
+            build/patch.pck
 
-      - name: Publish release (stable download link)
+      - name: Publish release (doimiy havola)
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           name: ZONA (oxirgi versiya)
           make_latest: true
-          files: build/android/zona.apk
+          files: |
+            build/android/zona.apk
+            build/patch.pck
+            build/latest.json
