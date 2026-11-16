@@ -350,14 +350,14 @@ jobs:
           OPTS='custom_template/debug=""
           custom_template/release=""
           gradle_build/use_gradle_build=false
-          architectures/armeabi-v7a=true
+          architectures/armeabi-v7a=false
           architectures/arm64-v8a=true
           architectures/x86=false
           architectures/x86_64=false
           version/code=1
           version/name="1.0"
-          package/unique_name="com.lutfullossr.zona"
-          package/name="ZONA"
+          package/unique_name="com.lutfullossr.zonafire"
+          package/name="ZONA 2"
           package/signed=true
           keystore/release="/root/debug.keystore"
           keystore/release_user="androiddebugkey"
@@ -436,6 +436,18 @@ jobs:
           mkdir -v -p build/android
           godot --headless --verbose --export-debug "Android" build/android/zona.apk
           ls -la build/android
+
+      - name: Inspect APK (diagnostika)
+        continue-on-error: true
+        run: |
+          BT="$ANDROID_HOME/build-tools/35.0.1"
+          ls -la build/android
+          echo "===== IMZO ====="
+          "$BT/apksigner" verify --verbose --print-certs build/android/zona.apk | head -20
+          echo "===== ALIGN ====="
+          "$BT/zipalign" -c -P 16 -v 4 build/android/zona.apk | tail -4
+          echo "===== MANIFEST ====="
+          "$BT/aapt2" dump badging build/android/zona.apk | grep -E "^package:|sdkVersion|targetSdk|native-code|uses-feature|launchable|application-label:" | head -30
 
       - name: Build patch (kod va sahnalar, kichik)
         continue-on-error: true
