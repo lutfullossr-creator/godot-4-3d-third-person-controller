@@ -323,7 +323,12 @@ jobs:
               bar.value = 100.0
               await get_tree().process_frame
               await get_tree().process_frame
-              get_tree().change_scene_to_packed(ps)
+              if not ps.can_instantiate():
+                  _fail("Sahnani yaratib bo'lmaydi (skriptda xato bor). Yuqoridagi sariq matnga qarang.")
+                  return
+              var err := get_tree().change_scene_to_packed(ps)
+              if err != OK:
+                  _fail("Sahnani boshlab bo'lmadi (kod %d). Skriptda xato bo'lishi mumkin." % err)
           EOF
           cat > freefire/boot.tscn <<'EOF'
           [gd_scene load_steps=2 format=3]
@@ -509,3 +514,28 @@ jobs:
           "$BT/aapt2" dump badging build/android/zona.apk | grep -E "^package:|sdkVersion|targetSdk|native-code|uses-feature|launchable|application-label:" | head -30
 
       - name: Build patch (kod va sahnalar, kichik)
+        continue-on-error: true
+        run: |
+          godot --headless --verbose --export-pack "Patch" build/patch.pck
+          test -s build/patch.pck
+          ls -la build
+          printf '{"run": %s, "assets": "%s"}\n' "$RUN" "$ASSETS" > build/latest.json
+          cat build/latest.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zona-apk
+          path: |
+            build/android/zona.apk
+            build/patch.pck
+
+      - name: Publish release (doimiy havola)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: ZONA (oxirgi versiya)
+          make_latest: true
+          files: |
+            build/android/zona.apk
+            build/patch.pck
+            build/latest.json
