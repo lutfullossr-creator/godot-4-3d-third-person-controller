@@ -63,6 +63,14 @@ jobs:
       - name: Build APK
         run: |
           mkdir -v -p build/android
+          echo "===== DIAGNOSTIKA ====="
+          echo "ANDROID_HOME=$ANDROID_HOME ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT JAVA_HOME=$JAVA_HOME"
+          ls $ANDROID_SDK_ROOT $ANDROID_HOME 2>/dev/null || true
+          ls $ANDROID_SDK_ROOT/build-tools $ANDROID_SDK_ROOT/platforms 2>/dev/null || true
+          ls ~/.local/share/godot/export_templates/*/ 2>/dev/null | head -40 || true
+          grep -i "android\|java\|keystore" ~/.config/godot/editor_settings-4.6.tres 2>/dev/null || true
+          ls -la /root/*.keystore ~/*.keystore 2>/dev/null || true
+          echo "===== DIAGNOSTIKA TUGADI ====="
           godot --headless --verbose --export-debug "Android" build/android/zona.apk
           ls -la build/android
 
