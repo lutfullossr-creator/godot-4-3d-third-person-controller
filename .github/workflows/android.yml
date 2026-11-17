@@ -389,6 +389,111 @@ jobs:
               var st := maxi(0, out.size() - 8)
               return "\n".join(PackedStringArray(out.slice(st)))
           EOF
+          cat > freefire/probe.gd <<'EOF'
+          extends Node
+
+          var out := ""
+
+
+          func _line(s: String) -> void:
+              out += s + "\n"
+
+
+          func _ready() -> void:
+              var ui := CanvasLayer.new()
+              add_child(ui)
+              var bg := ColorRect.new()
+              bg.color = Color(0.05, 0.08, 0.12)
+              bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+              ui.add_child(bg)
+              var sc := ScrollContainer.new()
+              sc.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+              ui.add_child(sc)
+              var lbl := Label.new()
+              lbl.add_theme_font_size_override("font_size", 20)
+              lbl.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+              lbl.custom_minimum_size = Vector2(1500, 0)
+              sc.add_child(lbl)
+              lbl.text = "PROBE ishga tushdi..."
+              await get_tree().create_timer(0.7).timeout
+              _line("Godot " + str(Engine.get_version_info().get("string", "?")))
+              _line("GPU: " + RenderingServer.get_video_adapter_name())
+              _line("renderer: " + str(ProjectSettings.get_setting("rendering/renderer/rendering_method")))
+              _line("main_scene: " + str(ProjectSettings.get_setting("application/run/main_scene")))
+              _line("--- skriptlar ---")
+              for n in ["build_info", "weapons", "fighter", "ultimatum", "game", "boot", "dbg"]:
+                  _line(_check("res://freefire/%s.gd" % n))
+              _line("--- sahnalar ---")
+              for n in ["boot", "ultimatum"]:
+                  _line(_check_scene("res://freefire/%s.tscn" % n))
+              _line("--- freefire papkasi ---")
+              _line(_ls("res://freefire"))
+              _line("--- log (oxirgi qatorlar) ---")
+              _line(_log())
+              lbl.text = out
+
+
+          func _check(p: String) -> String:
+              if not ResourceLoader.exists(p):
+                  return p.get_file() + ": FAYL YO'Q"
+              var s = load(p)
+              if s == null:
+                  return p.get_file() + ": NULL (yuklanmadi)"
+              if s is GDScript and not s.can_instantiate():
+                  return p.get_file() + ": KOMPILYATSIYA XATOSI"
+              return p.get_file() + ": ok"
+
+
+          func _check_scene(p: String) -> String:
+              if not ResourceLoader.exists(p):
+                  return p.get_file() + ": FAYL YO'Q"
+              var ps = load(p)
+              if ps == null or not (ps is PackedScene):
+                  return p.get_file() + ": NULL"
+              if not ps.can_instantiate():
+                  return p.get_file() + ": instantiate bo'lmaydi"
+              return p.get_file() + ": ok"
+
+
+          func _ls(p: String) -> String:
+              var d := DirAccess.open(p)
+              if d == null:
+                  return "(ochilmadi)"
+              var r := ""
+              for n in d.get_directories():
+                  r += n + "/  "
+              for n in d.get_files():
+                  r += n + "  "
+              return r
+
+
+          func _log() -> String:
+              var p := "user://logs/godot.log"
+              if not FileAccess.file_exists(p):
+                  return "(log fayli yo'q)"
+              var f := FileAccess.open(p, FileAccess.READ)
+              if f == null:
+                  return "(log ochilmadi)"
+              var n := f.get_length()
+              if n > 20000:
+                  f.seek(n - 20000)
+              var lines := f.get_as_text().split("\n")
+              var st := maxi(0, lines.size() - 45)
+              var res := ""
+              for i in range(st, lines.size()):
+                  var l: String = lines[i].strip_edges()
+                  if l != "":
+                      res += l.left(170) + "\n"
+              return res
+          EOF
+          cat > freefire/probe.tscn <<'EOF'
+          [gd_scene load_steps=2 format=3]
+
+          [ext_resource type="Script" path="res://freefire/probe.gd" id="1"]
+
+          [node name="Probe" type="Node"]
+          script = ExtResource("1")
+          EOF
           cat > /tmp/ult.tscn <<'EOF'
           [gd_scene load_steps=2 format=3]
 
@@ -478,6 +583,12 @@ jobs:
 
       - name: Patch project for Android (ETC2/ASTC va log)
         run: |
+          sed -i -e '/^renderer\/rendering_method/d' project.godot
+          if grep -q '^\[rendering\]' project.godot; then
+            sed -i '/^\[rendering\]/a renderer/rendering_method="gl_compatibility"\nrenderer/rendering_method.mobile="gl_compatibility"' project.godot
+          else
+            printf '\n[rendering]\n\nrenderer/rendering_method="gl_compatibility"\nrenderer/rendering_method.mobile="gl_compatibility"\n' >> project.godot
+          fi
           if ! grep -q "import_etc2_astc" project.godot; then
             if grep -q '^\[rendering\]' project.godot; then
               sed -i '/^\[rendering\]/a textures/vram_compression/import_etc2_astc=true' project.godot
@@ -528,48 +639,14 @@ jobs:
           printf '{"run": %s, "assets": "%s"}\n' "$RUN" "$ASSETS" > build/latest.json
           cat build/latest.json
 
-      - name: Test APKs (kichik test va compat variant)
+      - name: Probe APK (diagnostika varianti)
         continue-on-error: true
         run: |
-          set -x
-          cd /tmp && rm -rf t1 && mkdir -p t1 && cd t1
-          cat > project.godot <<'EOF'
-          config_version=5
-
-          [application]
-
-          config/name="MinTest"
-          run/main_scene="res://min.tscn"
-
-          [rendering]
-
-          renderer/rendering_method="gl_compatibility"
-          renderer/rendering_method.mobile="gl_compatibility"
-          textures/vram_compression/import_etc2_astc=true
-          EOF
-          cat > min.tscn <<'EOF'
-          [gd_scene format=3]
-
-          [node name="Min" type="Node"]
-
-          [node name="Label" type="Label" parent="."]
-          offset_right = 900.0
-          offset_bottom = 120.0
-          theme_override_font_sizes/font_size = 64
-          text = "MIN TEST OK"
-          EOF
-          awk '/^\[preset.1\]/{exit} {print}' "$GITHUB_WORKSPACE/export_presets.cfg" > export_presets.cfg
-          sed -i -e 's|^export_filter=.*|export_filter="all_resources"|' -e 's|^export_files=.*|export_files=PackedStringArray()|' -e 's|^package/unique_name=.*|package/unique_name="com.lutfullossr.mintest"|' -e 's|^package/name=.*|package/name="MIN TEST"|' export_presets.cfg
-          godot --headless --path /tmp/t1 --editor --quit || true
-          godot --headless --path /tmp/t1 --export-debug "Android" /tmp/t1/test_min.apk
-          mkdir -p "$GITHUB_WORKSPACE/build"
-          cp /tmp/t1/test_min.apk "$GITHUB_WORKSPACE/build/test_min.apk"
           cd "$GITHUB_WORKSPACE"
-          sed -i -e '/^renderer\/rendering_method/d' project.godot
-          sed -i '/^\[rendering\]/a renderer/rendering_method="gl_compatibility"\nrenderer/rendering_method.mobile="gl_compatibility"' project.godot
-          sed -i -e 's|^package/unique_name=.*|package/unique_name="com.lutfullossr.zonacompat"|' -e 's|^package/name=.*|package/name="ZONA C"|' export_presets.cfg
+          sed -i 's|^run/main_scene=.*|run/main_scene="res://freefire/probe.tscn"|' project.godot
+          sed -i -e 's|^package/unique_name=.*|package/unique_name="com.lutfullossr.zonaprobe"|' -e 's|^package/name=.*|package/name="ZONA PROBE"|' export_presets.cfg
           godot --headless --editor --quit || true
-          godot --headless --export-debug "Android" build/zona_compat.apk
+          godot --headless --export-debug "Android" build/probe.apk
           ls -la build
 
       - uses: actions/upload-artifact@v4
@@ -589,5 +666,4 @@ jobs:
             build/android/zona.apk
             build/patch.pck
             build/latest.json
-            build/test_min.apk
-            build/zona_compat.apk
+            build/probe.apk
