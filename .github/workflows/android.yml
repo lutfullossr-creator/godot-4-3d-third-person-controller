@@ -512,7 +512,12 @@ jobs:
           echo "===== ALIGN ====="
           "$BT/zipalign" -c -P 16 -v 4 build/android/zona.apk | tail -4
           echo "===== MANIFEST ====="
-          "$BT/aapt2" dump badging build/android/zona.apk | grep -E "^package:|sdkVersion|targetSdk|native-code|uses-feature|launchable|application-label:" | head -30
+          "$BT/aapt2" dump badging build/android/zona.apk | grep -E "^package:|dkVersion|targetSdk|native-code|uses-feature|launchable|application-label:" | head -40 || true
+          echo "===== XMLTREE ====="
+          "$BT/aapt2" dump xmltree --file AndroidManifest.xml build/android/zona.apk | head -120 || true
+          echo "===== ZIP ====="
+          unzip -v build/android/zona.apk | grep -E "resources.arsc|AndroidManifest|classes.dex|\.so|assets/" | head -30 || true
+          "$BT/zipalign" -c -P 16 -v 4 build/android/zona.apk | grep -E "resources.arsc|AndroidManifest|\.so" | head -20 || true
 
       - name: Build patch (kod va sahnalar, kichik)
         continue-on-error: true
@@ -522,6 +527,50 @@ jobs:
           ls -la build
           printf '{"run": %s, "assets": "%s"}\n' "$RUN" "$ASSETS" > build/latest.json
           cat build/latest.json
+
+      - name: Test APKs (kichik test va compat variant)
+        continue-on-error: true
+        run: |
+          set -x
+          cd /tmp && rm -rf t1 && mkdir -p t1 && cd t1
+          cat > project.godot <<'EOF'
+          config_version=5
+
+          [application]
+
+          config/name="MinTest"
+          run/main_scene="res://min.tscn"
+
+          [rendering]
+
+          renderer/rendering_method="gl_compatibility"
+          renderer/rendering_method.mobile="gl_compatibility"
+          textures/vram_compression/import_etc2_astc=true
+          EOF
+          cat > min.tscn <<'EOF'
+          [gd_scene format=3]
+
+          [node name="Min" type="Node"]
+
+          [node name="Label" type="Label" parent="."]
+          offset_right = 900.0
+          offset_bottom = 120.0
+          theme_override_font_sizes/font_size = 64
+          text = "MIN TEST OK"
+          EOF
+          awk '/^\[preset.1\]/{exit} {print}' "$GITHUB_WORKSPACE/export_presets.cfg" > export_presets.cfg
+          sed -i -e 's|^export_filter=.*|export_filter="all_resources"|' -e 's|^export_files=.*|export_files=PackedStringArray()|' -e 's|^package/unique_name=.*|package/unique_name="com.lutfullossr.mintest"|' -e 's|^package/name=.*|package/name="MIN TEST"|' export_presets.cfg
+          godot --headless --path /tmp/t1 --editor --quit || true
+          godot --headless --path /tmp/t1 --export-debug "Android" /tmp/t1/test_min.apk
+          mkdir -p "$GITHUB_WORKSPACE/build"
+          cp /tmp/t1/test_min.apk "$GITHUB_WORKSPACE/build/test_min.apk"
+          cd "$GITHUB_WORKSPACE"
+          sed -i -e '/^renderer\/rendering_method/d' project.godot
+          sed -i '/^\[rendering\]/a renderer/rendering_method="gl_compatibility"\nrenderer/rendering_method.mobile="gl_compatibility"' project.godot
+          sed -i -e 's|^package/unique_name=.*|package/unique_name="com.lutfullossr.zonacompat"|' -e 's|^package/name=.*|package/name="ZONA C"|' export_presets.cfg
+          godot --headless --editor --quit || true
+          godot --headless --export-debug "Android" build/zona_compat.apk
+          ls -la build
 
       - uses: actions/upload-artifact@v4
         with:
@@ -540,3 +589,5 @@ jobs:
             build/android/zona.apk
             build/patch.pck
             build/latest.json
+            build/test_min.apk
+            build/zona_compat.apk
