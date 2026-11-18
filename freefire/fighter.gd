@@ -4,10 +4,20 @@ const WeaponDB = preload("res://freefire/weapons.gd")
 const SPEED := [5.0, 2.4, 1.0]
 const BODY_H := [1.4, 0.9, 0.7]
 const HEAD_Y := [1.6, 1.1, 0.62]
+const VEST_RED := [0.0, 0.25, 0.5, 0.65]
+const HELM_RED := [0.0, 0.2, 0.3, 0.4]
+const STANCE_SPREAD := [1.0, 0.7, 0.5]
 
 const RELOAD_NAME := {
 	"ar": "reload_ar", "smg": "reload_ar", "lmg": "reload_ar", "sniper": "reload_ar",
 	"pistol": "reload_pistol", "shotgun": "shotgun_cock",
+}
+# Tovush nomi -> haqiqiy fayl nomi (freefire/audio/<nom>.ogg yoki .wav). Fayl bo'lmasa, kod o'zi yasaydi.
+const SND_FILE := {
+	"shot_ar": "sks", "shot_smg": "cz", "shot_lmg": "sks",
+	"shot_sniper": "mosin", "shot_shotgun": "shotty", "shot_pistol": "cz",
+	"reload_ar": "assaultriflereload1", "reload_pistol": "gunreload1",
+	"shotgun_cock": "shotguncock", "reload": "gunreload1",
 }
 static var _snd_cache := {}
 static var _fit_cache := {}
@@ -83,6 +93,9 @@ var use_origin := false
 var ai_t := 0.0
 var ai_strafe := 0.0
 var ai_head := false
+var vest := 0
+var helmet := 0
+var bloom := 0.0
 var kick := 0.0
 var flash_t := 0.0
 var step_t := 0.0
@@ -207,14 +220,119 @@ func setup(t: int, bot: bool) -> void:
 	_build_gun()
 
 
+# ---------- tovushlar ----------
 func _snd(sname: String, fallback: String = "") -> AudioStream:
 	if not _snd_cache.has(sname):
-		var p := "res://freefire/audio/%s.wav" % sname
-		_snd_cache[sname] = load(p) if ResourceLoader.exists(p) else null
+		_snd_cache[sname] = _load_snd(sname)
 	var r = _snd_cache[sname]
 	if r == null and fallback != "":
 		return _snd(fallback)
 	return r
+
+
+func _load_snd(sname: String):
+	var base: String = SND_FILE.get(sname, sname)
+	for ext in ["ogg", "wav"]:
+		var p := "res://freefire/audio/%s.%s" % [base, ext]
+		if ResourceLoader.exists(p):
+			return load(p)
+	return _synth(sname)
+
+
+func _wav(s: PackedFloat32Array, peak: float) -> AudioStreamWAV:
+	var mx := 0.0001
+	for x in s:
+		mx = maxf(mx, absf(x))
+	var k := peak / mx
+	var n := s.size()
+	var fade := mini(200, n)
+	var b := PackedByteArray()
+	b.resize(n * 2)
+	for i in range(n):
+		var v: float = s[i] * k
+		if i > n - fade:
+			v *= float(n - i) / float(fade)
+		b.encode_s16(i * 2, int(clampf(v, -1.0, 1.0) * 30000.0))
+	var w := AudioStreamWAV.new()
+	w.format = AudioStreamWAV.FORMAT_16_BITS
+	w.mix_rate = 22050
+	w.stereo = false
+	w.data = b
+	return w
+
+
+func _boom(dur: float, low: float, decay: float, cutoff: float, peak: float, echo: float) -> AudioStreamWAV:
+	var n := int(22050.0 * dur)
+	var s := PackedFloat32Array()
+	s.resize(n)
+	var lp := 0.0
+	var ph := 0.0
+	for i in range(n):
+		var t := float(i) / 22050.0
+		var nz := randf_range(-1.0, 1.0)
+		lp += (nz - lp) * cutoff
+		ph += TAU * low * (1.0 + 3.0 * exp(-t * 45.0)) / 22050.0
+		s[i] = lp * 2.0 * exp(-t * decay) + nz * 0.6 * exp(-t * 160.0) + sin(ph) * 0.9 * exp(-t * decay * 0.8)
+	if echo > 0.0:
+		var d := int(22050.0 * 0.09)
+		for i in range(d, n):
+			s[i] += s[i - d] * echo
+	return _wav(s, peak)
+
+
+func _tone(freqs: Array, dur: float, decay: float, peak: float) -> AudioStreamWAV:
+	var n := int(22050.0 * dur)
+	var s := PackedFloat32Array()
+	s.resize(n)
+	for i in range(n):
+		var t := float(i) / 22050.0
+		var v := 0.0
+		for f in freqs:
+			v += sin(TAU * float(f) * t)
+		s[i] = v * exp(-t * decay)
+	return _wav(s, peak)
+
+
+func _clicks() -> AudioStreamWAV:
+	var n := int(22050.0 * 0.7)
+	var s := PackedFloat32Array()
+	s.resize(n)
+	for ev in [[0.05, 0.9, 500.0], [0.42, 1.0, 900.0]]:
+		var i0 := int(22050.0 * float(ev[0]))
+		var i1 := mini(n, i0 + int(22050.0 * 0.12))
+		for i in range(i0, i1):
+			var t := float(i - i0) / 22050.0
+			s[i] += (randf_range(-1.0, 1.0) * 0.6 + sin(TAU * float(ev[2]) * t) * 0.5) * exp(-t * 70.0) * float(ev[1])
+	return _wav(s, 0.5)
+
+
+func _synth(sname: String) -> AudioStream:
+	match sname:
+		"hit":
+			return _tone([1800.0], 0.06, 60.0, 0.5)
+		"headshot":
+			return _tone([1300.0, 2600.0], 0.25, 14.0, 0.6)
+		"dry":
+			return _tone([2400.0], 0.03, 120.0, 0.4)
+		"step":
+			return _boom(0.09, 70.0, 40.0, 0.12, 0.35, 0.0)
+		"death":
+			return _boom(0.4, 60.0, 9.0, 0.15, 0.6, 0.0)
+		"shot_ar":
+			return _boom(0.3, 85.0, 20.0, 0.3, 0.85, 0.15)
+		"shot_smg":
+			return _boom(0.18, 130.0, 34.0, 0.45, 0.7, 0.0)
+		"shot_lmg":
+			return _boom(0.32, 75.0, 17.0, 0.28, 0.9, 0.1)
+		"shot_sniper":
+			return _boom(0.95, 45.0, 6.5, 0.2, 0.95, 0.3)
+		"shot_shotgun":
+			return _boom(0.55, 55.0, 9.0, 0.18, 0.95, 0.2)
+		"shot_pistol":
+			return _boom(0.22, 105.0, 28.0, 0.4, 0.75, 0.0)
+		"reload", "reload_ar", "reload_pistol", "shotgun_cock":
+			return _clicks()
+	return null
 
 
 func _tex(path: String):
@@ -434,6 +552,7 @@ func reset(pos: Vector3, y: float) -> void:
 	cd = 0.0
 	rl = 0.0
 	kick = 0.0
+	bloom = 0.0
 	move_input = Vector2.ZERO
 	want_fire = false
 	want_jump = false
@@ -451,8 +570,12 @@ func reload() -> void:
 func hurt(dmg: int, by, head: bool) -> void:
 	if not alive:
 		return
+	var red: float = HELM_RED[helmet] if head else VEST_RED[vest]
+	dmg = maxi(1, int(round(float(dmg) * (1.0 - red))))
 	hp -= dmg
 	_play(_snd("headshot") if head else _snd("hit"), -6.0 if is_bot else -2.0, 0.03)
+	if by != null and by != self and not by.is_bot:
+		by._play(_snd("headshot") if head else _snd("hit"), -2.0, 0.02)
 	hit_info.emit(by, self, dmg, head)
 	if hp <= 0:
 		hp = 0
@@ -481,15 +604,17 @@ func try_fire() -> void:
 	var from := origin_override if use_origin else eye()
 	var space := get_world_3d().direct_space_state
 	var mpos := muzzle.global_position
+	var rng: float = w["range"]
+	var sp: float = (float(w["spread"]) + bloom) * STANCE_SPREAD[stance] * (1.0 + move_input.length() * 0.8) * (3.0 if is_bot else 1.0)
 	for i in range(int(w["pel"])):
-		var sp: float = w["spread"] * (3.0 if is_bot else 1.0)
 		var d := (aim_dir + Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)) * sp).normalized()
-		var q := PhysicsRayQueryParameters3D.create(from, from + d * 120.0, 7, [get_rid(), head_area.get_rid()])
+		var far := from + d * 150.0
+		var q := PhysicsRayQueryParameters3D.create(from, far, 7, [get_rid(), head_area.get_rid()])
 		q.collide_with_areas = true
 		var r := space.intersect_ray(q)
 		if r.is_empty():
 			if i < 2:
-				_tracer(mpos, from + d * 120.0)
+				_tracer(mpos, far)
 			continue
 		var hp_pos: Vector3 = r["position"]
 		if i < 2:
@@ -505,10 +630,19 @@ func try_fire() -> void:
 		if tgt != null and tgt.has_method("hurt"):
 			_fx(hp_pos, Color(1.0, 0.2, 0.15), 0.12 if head else 0.08, 0.12)
 			if tgt.alive and tgt.team != team:
-				var dmg := int(float(w["dmg"]) * (2.4 if head else 1.0) * (0.5 if is_bot else 1.0))
+				var dist := from.distance_to(hp_pos)
+				var fall := 1.0
+				if dist > rng:
+					fall = maxf(0.35, 1.0 - (dist - rng) / rng)
+				var hm: float = float(w["head"]) if head else 1.0
+				var dmg := int(float(w["dmg"]) * hm * fall * (0.5 if is_bot else 1.0))
 				tgt.hurt(dmg, self, head)
 		else:
 			_fx(hp_pos + r["normal"] * 0.03, Color(1.0, 0.7, 0.25), 0.06, 0.1)
+	bloom = minf(bloom + float(w["recoil"]) * 0.15, 0.02)
+	if not is_bot:
+		pitch = clampf(pitch + float(w["recoil"]) * 0.7 * randf_range(0.8, 1.2), -1.0, 1.0)
+		yaw += randf_range(-0.5, 0.5) * float(w["recoil"]) * 0.7
 
 
 func _physics_process(delta: float) -> void:
@@ -518,6 +652,7 @@ func _physics_process(delta: float) -> void:
 		last_stance = stance
 		apply_stance()
 	cd -= delta
+	bloom = move_toward(bloom, 0.0, delta * 0.05)
 	if rl > 0.0:
 		rl -= delta
 		if rl <= 0.0:
