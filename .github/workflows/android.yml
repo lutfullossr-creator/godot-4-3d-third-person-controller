@@ -520,8 +520,8 @@ jobs:
           architectures/x86_64=false
           version/code=1
           version/name="1.0"
-          package/unique_name="com.lutfullossr.zonafire"
-          package/name="ZONA 2"
+          package/unique_name="com.lutfullossr.zona3"
+          package/name="ZONA 3"
           package/signed=true
           keystore/release="/root/debug.keystore"
           keystore/release_user="androiddebugkey"
@@ -546,7 +546,7 @@ jobs:
           export_filter="all_resources"
           export_files=PackedStringArray()
           include_filter=""
-          exclude_filter="autoloads/*, enemies/*, level/*, menu/*, player/*, shared/*, static/*, main.gd, main.tscn, prototype.tscn"
+          exclude_filter="autoloads/*, enemies/*, level/*, menu/*, player/*, shared/*, static/*, main.gd, main.tscn, prototype.tscn, freefire/models/*MP5*, freefire/models/*Mac10*"
           export_path="build/android/zona.apk"
           encryption_include_filters=""
           encryption_exclude_filters=""
