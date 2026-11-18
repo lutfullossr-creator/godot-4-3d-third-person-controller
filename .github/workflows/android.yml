@@ -543,10 +543,10 @@ jobs:
           advanced_options=false
           dedicated_server=false
           custom_features=""
-          export_filter="scenes"
-          export_files=PackedStringArray($APK_LIST)
+          export_filter="all_resources"
+          export_files=PackedStringArray()
           include_filter=""
-          exclude_filter=""
+          exclude_filter="autoloads/*, enemies/*, level/*, menu/*, player/*, shared/*, static/*, main.gd, main.tscn, prototype.tscn"
           export_path="build/android/zona.apk"
           encryption_include_filters=""
           encryption_exclude_filters=""
@@ -565,7 +565,7 @@ jobs:
           advanced_options=false
           dedicated_server=false
           custom_features=""
-          export_filter="scenes"
+          export_filter="resources"
           export_files=PackedStringArray($PATCH_LIST)
           include_filter=""
           exclude_filter=""
