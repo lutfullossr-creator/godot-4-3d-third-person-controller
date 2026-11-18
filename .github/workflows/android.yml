@@ -534,6 +534,7 @@ jobs:
           permissions/internet=true
           permissions/access_network_state=true
           permissions/access_wifi_state=true'
+          OPTS2=$(printf '%s' "$OPTS" | sed -e 's|com.lutfullossr.zona3|com.lutfullossr.zonalite|' -e 's|package/name="ZONA 3"|package/name="ZONA LITE"|')
           cat > export_presets.cfg <<EOF
           [preset.0]
 
@@ -578,6 +579,28 @@ jobs:
           [preset.1.options]
 
           $OPTS
+
+          [preset.2]
+
+          name="Lite"
+          platform="Android"
+          runnable=true
+          advanced_options=false
+          dedicated_server=false
+          custom_features=""
+          export_filter="all_resources"
+          export_files=PackedStringArray()
+          include_filter=""
+          exclude_filter="autoloads/*, enemies/*, level/*, menu/*, player/*, shared/*, static/*, main.gd, main.tscn, prototype.tscn, freefire/models/*, freefire/audio/*"
+          export_path="build/lite.apk"
+          encryption_include_filters=""
+          encryption_exclude_filters=""
+          encrypt_pck=false
+          encrypt_directory=false
+
+          [preset.2.options]
+
+          $OPTS2
           EOF
           grep -n "export_files" export_presets.cfg | cut -c1-400
 
@@ -626,6 +649,10 @@ jobs:
           "$BT/aapt2" dump badging build/android/zona.apk | grep -E "^package:|dkVersion|targetSdk|native-code|uses-feature|launchable|application-label:" | head -40 || true
           echo "===== XMLTREE ====="
           "$BT/aapt2" dump xmltree --file AndroidManifest.xml build/android/zona.apk | head -120 || true
+          echo "===== DUBLIKAT / NOMLAR ====="
+          unzip -Z1 build/android/zona.apk | wc -l || true
+          unzip -Z1 build/android/zona.apk | sort | uniq -d | head -10 || true
+          unzip -Z1 build/android/zona.apk | grep -P '[^\x20-\x7E]' | head -10 || true
           echo "===== ZIP ====="
           unzip -v build/android/zona.apk | grep -E "resources.arsc|AndroidManifest|classes.dex|\.so|assets/" | head -30 || true
           "$BT/zipalign" -c -P 16 -v 4 build/android/zona.apk | grep -E "resources.arsc|AndroidManifest|\.so" | head -20 || true
@@ -638,6 +665,13 @@ jobs:
           ls -la build
           printf '{"run": %s, "assets": "%s"}\n' "$RUN" "$ASSETS" > build/latest.json
           cat build/latest.json
+
+      - name: Lite APK (modelsiz va ovozsiz variant)
+        continue-on-error: true
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          godot --headless --export-debug "Lite" build/lite.apk
+          ls -la build
 
       - name: Probe APK (diagnostika varianti)
         continue-on-error: true
@@ -667,3 +701,4 @@ jobs:
             build/patch.pck
             build/latest.json
             build/probe.apk
+            build/lite.apk
