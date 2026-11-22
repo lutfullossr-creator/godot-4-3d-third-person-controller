@@ -29,6 +29,12 @@ var stick_vec := Vector2.ZERO
 var look_id := -1
 var btn_ids := {}
 var touch_fire := false
+var zoomed := false
+var round_t := 60.0
+var dmg_t := 0.0
+var hitm_t := 0.0
+var hitm_head := false
+var feed: Array = []
 var sfx2d: AudioStreamPlayer
 
 
@@ -43,8 +49,11 @@ func _ready() -> void:
 
 
 func _ld(n: String):
-	var p := "res://freefire/audio/%s.wav" % n
-	return load(p) if ResourceLoader.exists(p) else null
+	for ext in [".ogg", ".wav"]:
+		var p := "res://freefire/audio/%s%s" % [n, ext]
+		if ResourceLoader.exists(p):
+			return load(p)
+	return null
 
 
 # ---------- dunyo ----------
@@ -217,13 +226,15 @@ func _start_match(n: int) -> void:
 
 
 func _give(f, i: int) -> void:
-	f.wid = i
-	f.mag = WeaponDB.W[i]["mag"]
-	f.rl = 0.0
+	f.give(i)
 
 
 func _begin_round() -> void:
 	touch_fire = false
+	round_t = 60.0
+	zoomed = false
+	cam.fov = 75.0
+	feed.clear()
 	for t in [0, 1]:
 		var idx := 0
 		for f in fighters:
@@ -237,7 +248,7 @@ func _begin_round() -> void:
 		pick_title.text = "Raund %d/5: qurol tanlang (hamma shu qurol bilan)" % (round_i + 1)
 		pick_panel.visible = true
 	elif round_i < 4:
-		var i := randi() % WeaponDB.W.size()
+		var i: int = randi() % WeaponDB.W.size()
 		for f in fighters:
 			_give(f, i)
 		_go_live("Raqib tanladi: %s" % WeaponDB.W[i]["n"])
@@ -264,30 +275,57 @@ func _go_live(m: String) -> void:
 	_msg(m, 2.0)
 
 
-func _check_round() -> void:
+func _end_round(w: int) -> void:
+	score[w] += 1
+	state = S.END
+	end_t = 3.0
+	for f in fighters:
+		f.move_input = Vector2.ZERO
+		f.want_fire = false
+	touch_fire = false
+	_msg("RAUND YUTDINGIZ!" if w == 0 else "Raund yutqazildi", 3.0)
+
+
+func _check_round(delta: float) -> void:
 	var a := [0, 0]
+	var hpsum := [0, 0]
 	for f in fighters:
 		if f.alive:
 			a[f.team] += 1
+			hpsum[f.team] += f.hp
 	if a[0] == 0 or a[1] == 0:
-		var w := 1 if a[0] == 0 else 0
-		score[w] += 1
-		state = S.END
-		end_t = 3.0
-		for f in fighters:
-			f.move_input = Vector2.ZERO
-			f.want_fire = false
-		touch_fire = false
-		_msg("RAUND YUTDINGIZ!" if w == 0 else "Raund yutqazildi", 3.0)
+		_end_round(1 if a[0] == 0 else 0)
+		return
+	round_t -= delta
+	if round_t <= 0.0:
+		_end_round(0 if hpsum[0] >= hpsum[1] else 1)
 
 
-func _on_hit(attacker, _target, dmg: int, head: bool) -> void:
-	if attacker == player and state == S.LIVE:
+func _name_of(f) -> String:
+	if f == player:
+		return "Siz"
+	if f.team == player.team:
+		return "Do'st"
+	return "Raqib %d" % fighters.find(f)
+
+
+func _on_hit(attacker, target, dmg: int, head: bool) -> void:
+	if state != S.LIVE:
+		return
+	if attacker == player:
 		sfx2d.stream = _ld("headshot" if head else "hit")
 		sfx2d.volume_db = -3.0
 		if sfx2d.stream != null:
 			sfx2d.play()
+		hitm_t = 0.2
+		hitm_head = head
 		_msg(("HEADSHOT! " if head else "") + str(dmg), 0.8)
+	if target == player:
+		dmg_t = 0.4
+	if target.hp <= 0:
+		feed.append({"t": 4.0, "s": "%s  >  %s%s" % [_name_of(attacker), _name_of(target), "  [HEADSHOT]" if head else ""]})
+		if feed.size() > 4:
+			feed.pop_front()
 
 
 # ---------- botlar ----------
@@ -324,7 +362,7 @@ func _think(b, delta: float) -> void:
 			b.want_jump = true
 	var fw := -1.0 if dist > 12.0 else (1.0 if dist < 5.0 else 0.0)
 	b.move_input = Vector2(b.ai_strafe * 0.7, fw)
-	var aim_pt: Vector3 = t.global_position + Vector3(0.0, t.head_y() if b.ai_head else 1.0, 0.0)
+	var aim_pt: Vector3 = t.aim_point(b.ai_head)
 	b.use_origin = false
 	b.aim_dir = (aim_pt - b.eye()).normalized()
 	b.want_fire = dist < 45.0 and facing.dot(flat.normalized()) > 0.9
@@ -356,21 +394,58 @@ func _player_input(delta: float) -> void:
 	if Input.is_key_pressed(KEY_SPACE):
 		p.want_jump = true
 	p.want_fire = touch_fire or Input.is_key_pressed(KEY_F)
+	if p.want_fire:
+		_assist(p, delta)
+
+
+func _assist(p, delta: float) -> void:
+	var best = null
+	var bd := 0.14
+	var fwd := Basis.from_euler(Vector3(p.pitch, p.yaw, 0.0)) * Vector3(0, 0, -1)
+	var eye_p: Vector3 = p.eye()
+	for f in fighters:
+		if f.team != p.team and f.alive:
+			var dir: Vector3 = (f.aim_point(false) - eye_p).normalized()
+			var ang := fwd.angle_to(dir)
+			if ang < bd:
+				bd = ang
+				best = f
+	if best == null:
+		return
+	var dv: Vector3 = (best.aim_point(false) - eye_p).normalized()
+	var ty := atan2(-dv.x, -dv.z)
+	var tp := asin(clampf(dv.y, -1.0, 1.0))
+	p.yaw = lerp_angle(p.yaw, ty, clampf(4.0 * delta, 0.0, 1.0))
+	p.pitch = lerpf(p.pitch, tp, clampf(4.0 * delta, 0.0, 1.0))
+
+
+func _spectate_target():
+	for f in fighters:
+		if f.alive and f.team == player.team:
+			return f
+	for f in fighters:
+		if f.alive:
+			return f
+	return player
 
 
 func _update_cam() -> void:
 	var p = player
 	if p == null:
 		return
-	var d := Basis.from_euler(Vector3(p.pitch, p.yaw, 0.0)) * Vector3(0, 0, -1)
-	p.aim_dir = d
-	var right := Vector3(cos(p.yaw), 0.0, -sin(p.yaw))
-	var pos: Vector3 = p.eye() - d * 3.0 + right * 0.6 + Vector3.UP * 0.3
-	pos += Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)) * p.kick * 0.012
+	var v = p
+	if not p.alive:
+		v = _spectate_target()
+	var d := Basis.from_euler(Vector3(v.pitch, v.yaw, 0.0)) * Vector3(0, 0, -1)
+	var right := Vector3(cos(v.yaw), 0.0, -sin(v.yaw))
+	var pos: Vector3 = v.eye() - d * 3.0 + right * 0.6 + Vector3.UP * 0.3
+	pos += Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)) * v.kick * 0.012
 	pos.y = maxf(pos.y, 0.3)
-	cam.global_transform = Transform3D(Basis.from_euler(Vector3(p.pitch, p.yaw, 0.0)), pos)
-	p.origin_override = pos
-	p.use_origin = true
+	cam.global_transform = Transform3D(Basis.from_euler(Vector3(v.pitch, v.yaw, 0.0)), pos)
+	if p.alive:
+		p.aim_dir = d
+		p.origin_override = pos
+		p.use_origin = true
 
 
 func _toggle_stance(s: int) -> void:
@@ -386,6 +461,9 @@ func _btns() -> Array:
 		["crouch", Vector2(vs.x - 250, vs.y - 190), 36.0, "CHO"],
 		["prone", Vector2(vs.x - 340, vs.y - 130), 36.0, "YOT"],
 		["reload", Vector2(vs.x - 80, vs.y - 280), 36.0, "ZAR"],
+		["swap", Vector2(vs.x - 340, vs.y - 230), 34.0, "QUR"],
+		["zoom", Vector2(vs.x - 190, vs.y - 270), 34.0, "NIS"],
+		["pause", Vector2(vs.x - 50, 50), 28.0, "II"],
 	]
 
 
@@ -397,6 +475,9 @@ func _btn_at(p: Vector2) -> String:
 
 
 func _btn_down(n: String) -> void:
+	if n == "pause":
+		_show_menu("PAUZA")
+		return
 	if player == null or not player.alive:
 		return
 	match n:
@@ -410,6 +491,10 @@ func _btn_down(n: String) -> void:
 			_toggle_stance(2)
 		"reload":
 			player.reload()
+		"swap":
+			player.swap()
+		"zoom":
+			zoomed = not zoomed
 
 
 func _input(e: InputEvent) -> void:
@@ -424,6 +509,11 @@ func _input(e: InputEvent) -> void:
 			KEY_R:
 				if player != null:
 					player.reload()
+			KEY_Q:
+				if player != null:
+					player.swap()
+			KEY_V:
+				zoomed = not zoomed
 		return
 	var vs := get_viewport().get_visible_rect().size
 	if e is InputEventScreenTouch:
@@ -452,8 +542,9 @@ func _input(e: InputEvent) -> void:
 		if e.index == stick_id:
 			stick_vec = ((e.position - stick_origin) / 70.0).limit_length(1.0)
 		elif e.index == look_id and player != null:
-			player.yaw -= e.relative.x * 0.005
-			player.pitch = clampf(player.pitch - e.relative.y * 0.004, -1.0, 1.0)
+			var sens := 0.45 if zoomed else 1.0
+			player.yaw -= e.relative.x * 0.005 * sens
+			player.pitch = clampf(player.pitch - e.relative.y * 0.004 * sens, -1.0, 1.0)
 
 
 # ---------- har kadr ----------
@@ -470,7 +561,9 @@ func _process(delta: float) -> void:
 		for f in fighters:
 			if f.is_bot and f.alive:
 				_think(f, delta)
-		_check_round()
+		_check_round(delta)
+		if player != null and not player.alive:
+			_msg("Siz oldingiz, kuzatilmoqda...", 0.3)
 	elif state == S.END:
 		end_t -= delta
 		if end_t <= 0.0:
@@ -482,14 +575,21 @@ func _process(delta: float) -> void:
 				_begin_round()
 	if player != null and state != S.MENU:
 		_update_cam()
-		lbl_top.text = "Raund %d/5     %d : %d" % [mini(round_i + 1, 5), score[0], score[1]]
+		lbl_top.text = "Raund %d/5     %d : %d     %d s" % [mini(round_i + 1, 5), score[0], score[1], int(ceil(maxf(round_t, 0.0)))]
 		var w: Dictionary = WeaponDB.W[player.wid]
-		lbl_w.text = "%s  %s" % [w["n"], "ZARYAD..." if player.rl > 0.0 else "%d/%d" % [player.mag, w["mag"]]]
+		var alt: String = WeaponDB.W[player.slot_wid[1 - player.slot]]["n"]
+		lbl_w.text = "%s  %s    [%s]" % [w["n"], "ZARYAD..." if player.rl > 0.0 else "%d/%d" % [player.mag, w["mag"]], alt]
 		lbl_hp.text = "HP %d/200" % player.hp
 	else:
 		lbl_top.text = ""
 		lbl_w.text = ""
 		lbl_hp.text = ""
+	dmg_t = maxf(dmg_t - delta, 0.0)
+	hitm_t = maxf(hitm_t - delta, 0.0)
+	for it in feed:
+		it["t"] = float(it["t"]) - delta
+	feed = feed.filter(func(it): return float(it["t"]) > 0.0)
+	cam.fov = lerpf(cam.fov, 35.0 if zoomed else 75.0, clampf(10.0 * delta, 0.0, 1.0))
 	msg_t -= delta
 	if msg_t <= 0.0 and state != S.END:
 		lbl_msg.text = ""
@@ -505,6 +605,16 @@ func _draw_hud() -> void:
 		hud.draw_line(c + d * 4.0, c + d * 14.0, Color.WHITE, 2.0)
 	if state == S.PICK:
 		return
+	if dmg_t > 0.0:
+		hud.draw_rect(Rect2(Vector2.ZERO, vs), Color(1, 0, 0, dmg_t * 0.7))
+	if player.alive and player.hp < 60:
+		hud.draw_rect(Rect2(Vector2.ZERO, vs), Color(0.6, 0, 0, 0.12))
+	if hitm_t > 0.0:
+		var hc := Color(1, 0.2, 0.2) if hitm_head else Color.WHITE
+		for d2 in [Vector2(1, 1), Vector2(-1, 1), Vector2(1, -1), Vector2(-1, -1)]:
+			hud.draw_line(c + d2 * 8.0, c + d2 * 18.0, hc, 3.0)
+	for i in range(feed.size()):
+		hud.draw_string(ThemeDB.fallback_font, Vector2(vs.x - 560, 110 + i * 30), str(feed[i]["s"]), HORIZONTAL_ALIGNMENT_RIGHT, 520.0, 22)
 	if stick_id != -1:
 		hud.draw_circle(stick_origin, 70.0, Color(1, 1, 1, 0.15))
 		hud.draw_circle(stick_origin + stick_vec * 70.0, 30.0, Color(1, 1, 1, 0.4))
