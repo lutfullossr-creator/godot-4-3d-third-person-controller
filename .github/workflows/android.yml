@@ -44,12 +44,14 @@ jobs:
           "$SDKM" --sdk_root="$ANDROID_HOME" "platform-tools" "build-tools;35.0.1" "platforms;android-35"
           ls "$ANDROID_HOME/build-tools" "$ANDROID_HOME/platforms"
 
-      - name: Version info (assets hash va build raqami)
+      - name: Version info (asosiy va resurs hashlari, build raqami)
         run: |
-          ASSETS=$( { find freefire -type f ! -name '*.gd' ! -name '*.tscn' -print0 2>/dev/null | sort -z | xargs -0 -r sha1sum; sha1sum .github/workflows/android.yml project.godot; } | sha1sum | cut -c1-12 )
-          echo "ASSETS=$ASSETS" >> "$GITHUB_ENV"
+          BASEH=$( sha1sum .github/workflows/android.yml project.godot | sha1sum | cut -c1-12 )
+          ASSETH=$( find freefire -type f ! -name '*.gd' ! -name '*.tscn' -print0 2>/dev/null | sort -z | xargs -0 -r sha1sum | sha1sum | cut -c1-12 )
+          echo "BASEH=$BASEH" >> "$GITHUB_ENV"
+          echo "ASSETH=$ASSETH" >> "$GITHUB_ENV"
           echo "RUN=${{ github.run_number }}" >> "$GITHUB_ENV"
-          echo "assets hash: $ASSETS  run: ${{ github.run_number }}"
+          echo "base: $BASEH  assets: $ASSETH  run: ${{ github.run_number }}"
 
       - name: Slim assets (textures and audio)
         run: |
@@ -69,7 +71,7 @@ jobs:
           cat > freefire/build_info.gd <<EOF
           extends RefCounted
           const RUN := ${RUN}
-          const ASSETS := "${ASSETS}"
+          const BASE := "${BASEH}"
           EOF
           cat > freefire/boot.gd <<'EOF'
           extends Node
@@ -77,7 +79,8 @@ jobs:
           const BI = preload("res://freefire/build_info.gd")
           const MAIN := "res://freefire/ultimatum.tscn"
           const BASE_URL := "https://github.com/lutfullossr-creator/godot-4-3d-third-person-controller/releases/latest/download/"
-          const INFO := "user://patch_info.json"
+          const PATCH_INFO := "user://patch_info.json"
+          const ASSET_INFO := "user://assets_info.json"
 
           var lbl: Label
           var bar: ProgressBar
@@ -86,7 +89,10 @@ jobs:
           var state := "init"
           var t := 0.0
           var cur_run := 0
-          var remote_run := 0
+          var assets_have := ""
+          var remote := {}
+          var dl_kind := ""
+          var tried := {}
 
 
           func _ready() -> void:
@@ -96,7 +102,12 @@ jobs:
               var dbg = load("res://freefire/dbg.gd")
               if dbg != null and dbg.can_instantiate():
                   get_tree().root.add_child.call_deferred(dbg.new())
-              _load_cached_patch()
+              var pi := _load_cached("patch", PATCH_INFO, "patch_")
+              if not pi.is_empty():
+                  cur_run = int(pi.get("run", cur_run))
+              var ai := _load_cached("assets", ASSET_INFO, "assets_")
+              if not ai.is_empty():
+                  assets_have = str(ai.get("hash", ""))
               _check_update()
 
 
@@ -160,24 +171,26 @@ jobs:
                   f.store_string(JSON.stringify(d))
 
 
-          # Oldin yuklangan yamoqni (agar shu APK ga mos bo'lsa) qo'llash
-          func _load_cached_patch() -> void:
-              var info := _read_json(INFO)
+          # Oldin yuklangan paketni (yamoq yoki resurs) qo'llash; mos kelmasa o'chirish
+          func _load_cached(kind: String, info_path: String, prefix: String) -> Dictionary:
+              var info := _read_json(info_path)
               var keep := str(info.get("file", ""))
               var d := DirAccess.open("user://")
               if d == null:
-                  return
+                  return {}
               for f in d.get_files():
-                  if f.begins_with("patch_") and f.ends_with(".pck") and f != keep:
+                  if f.begins_with(prefix) and f.ends_with(".pck") and f != keep:
                       d.remove(f)
-              if keep == "":
-                  return
-              var ok := str(info.get("assets", "")) == BI.ASSETS and int(info.get("run", 0)) >= BI.RUN and FileAccess.file_exists("user://" + keep)
+              if keep == "" or not FileAccess.file_exists("user://" + keep):
+                  return {}
+              var ok: bool = true
+              if kind == "patch":
+                  ok = str(info.get("base", "")) == BI.BASE and int(info.get("run", 0)) >= BI.RUN
               if ok and ProjectSettings.load_resource_pack("user://" + keep, true):
-                  cur_run = int(info["run"])
-              else:
-                  d.remove(keep)
-                  d.remove("patch_info.json")
+                  return info
+              d.remove(keep)
+              d.remove(info_path.get_file())
+              return {}
 
 
           func _check_update() -> void:
@@ -203,11 +216,20 @@ jobs:
               if not (v is Dictionary):
                   _continue()
                   return
-              remote_run = int(v.get("run", 0))
-              if str(v.get("assets", "")) != BI.ASSETS:
+              remote = v
+              if str(remote.get("base", "")) != BI.BASE:
                   _need_apk()
-              elif remote_run > cur_run:
-                  _download_patch()
+              else:
+                  _next_download()
+
+
+          func _next_download() -> void:
+              var rr := int(remote.get("run", 0))
+              var ra := str(remote.get("assets", ""))
+              if rr > cur_run and not tried.has("patch"):
+                  _download("patch")
+              elif ra != "" and ra != assets_have and not tried.has("assets"):
+                  _download("assets")
               else:
                   _continue()
 
@@ -215,7 +237,7 @@ jobs:
           func _need_apk() -> void:
               state = "apk"
               bar.visible = false
-              lbl.text = "Yangi versiya: model/ovoz yoki asosiy fayllar o'zgargan.\nAPK ni qayta o'rnatish kerak."
+              lbl.text = "Yangi versiya: asosiy fayllar o'zgargan.\nAPK ni qayta o'rnatish kerak."
               _buttons([["APK yuklash", _open_apk], ["Hozircha davom etish", _continue]])
 
 
@@ -223,42 +245,57 @@ jobs:
               OS.shell_open(BASE_URL + "zona.apk")
 
 
-          func _download_patch() -> void:
+          func _download(kind: String) -> void:
               state = "download"
+              dl_kind = kind
+              tried[kind] = true
               bar.value = 0
-              lbl.text = "Yangilanish yuklanmoqda..."
+              lbl.text = "Yuklanmoqda: " + kind + "..."
               http = HTTPRequest.new()
-              http.download_file = "user://patch_dl.pck"
-              http.timeout = 180.0
+              http.download_file = "user://%s_dl.pck" % kind
+              http.timeout = 300.0
               add_child(http)
-              http.request_completed.connect(_on_patch)
-              if http.request(BASE_URL + "patch.pck") != OK:
+              http.request_completed.connect(_on_download)
+              if http.request(BASE_URL + kind + ".pck") != OK:
                   http.queue_free()
                   http = null
-                  _continue()
+                  _next_download()
 
 
-          func _on_patch(result: int, code: int, _h: PackedStringArray, _b: PackedByteArray) -> void:
+          func _on_download(result: int, code: int, _h: PackedStringArray, _b: PackedByteArray) -> void:
               http.queue_free()
               http = null
               var d := DirAccess.open("user://")
+              var dl := "%s_dl.pck" % dl_kind
               if result != HTTPRequest.RESULT_SUCCESS or code != 200 or d == null:
                   if d != null:
-                      d.remove("patch_dl.pck")
-                  lbl.text = "Yangilanish yuklanmadi, joriy versiya ishga tushadi"
-                  await get_tree().create_timer(1.5).timeout
-                  _continue()
+                      d.remove(dl)
+                  lbl.text = "Yuklanmadi (" + dl_kind + "), davom etamiz..."
+                  await get_tree().create_timer(1.2).timeout
+                  _next_download()
                   return
-              var fname := "patch_%d.pck" % remote_run
-              if d.file_exists(fname):
-                  d.remove(fname)
-              d.rename("patch_dl.pck", fname)
-              if ProjectSettings.load_resource_pack("user://" + fname, true):
-                  cur_run = remote_run
-                  _write_json(INFO, {"run": remote_run, "assets": BI.ASSETS, "file": fname})
+              if dl_kind == "patch":
+                  var pf := "patch_%d.pck" % int(remote.get("run", 0))
+                  if d.file_exists(pf):
+                      d.remove(pf)
+                  d.rename(dl, pf)
+                  if ProjectSettings.load_resource_pack("user://" + pf, true):
+                      cur_run = int(remote.get("run", 0))
+                      _write_json(PATCH_INFO, {"run": cur_run, "base": BI.BASE, "file": pf})
+                  else:
+                      d.remove(pf)
               else:
-                  d.remove(fname)
-              _continue()
+                  var h := str(remote.get("assets", ""))
+                  var af := "assets_%s.pck" % h
+                  if d.file_exists(af):
+                      d.remove(af)
+                  d.rename(dl, af)
+                  if ProjectSettings.load_resource_pack("user://" + af, true):
+                      assets_have = h
+                      _write_json(ASSET_INFO, {"hash": h, "file": af})
+                  else:
+                      d.remove(af)
+              _next_download()
 
 
           func _continue() -> void:
@@ -299,7 +336,7 @@ jobs:
                   var got := http.get_downloaded_bytes()
                   if total > 0:
                       bar.value = float(got) * 100.0 / float(total)
-                  lbl.text = "Yangilanish yuklanmoqda... %d%%  (%.1f MB)" % [int(bar.value), float(got) / 1048576.0]
+                  lbl.text = "Yuklanmoqda: %s  %d%%  (%.1f MB)" % [dl_kind, int(bar.value), float(got) / 1048576.0]
               elif state == "load":
                   var prog: Array = []
                   var st := ResourceLoader.load_threaded_get_status(MAIN, prog)
@@ -312,6 +349,8 @@ jobs:
                       var ps := ResourceLoader.load_threaded_get(MAIN) as PackedScene
                       if ps == null:
                           _fail("Sahna yuklandi, lekin PackedScene emas: " + MAIN)
+                      elif not ps.can_instantiate():
+                          _fail("Sahna ochilmadi (skript xatosi): " + MAIN)
                       else:
                           _start(ps)
                   else:
@@ -323,12 +362,7 @@ jobs:
               bar.value = 100.0
               await get_tree().process_frame
               await get_tree().process_frame
-              if not ps.can_instantiate():
-                  _fail("Sahnani yaratib bo'lmaydi (skriptda xato bor). Yuqoridagi sariq matnga qarang.")
-                  return
-              var err := get_tree().change_scene_to_packed(ps)
-              if err != OK:
-                  _fail("Sahnani boshlab bo'lmadi (kod %d). Skriptda xato bo'lishi mumkin." % err)
+              get_tree().change_scene_to_packed(ps)
           EOF
           cat > freefire/boot.tscn <<'EOF'
           [gd_scene load_steps=2 format=3]
@@ -509,8 +543,10 @@ jobs:
         run: |
           sed -i 's|^run/main_scene=.*|run/main_scene="res://freefire/boot.tscn"|' project.godot
           awk '/^\[autoload\]/{skip=1;next} /^\[/{skip=0} !skip' project.godot > project.tmp && mv project.tmp project.godot
-          APK_LIST=$(find freefire -type f \( -name '*.gd' -o -name '*.tscn' -o -iname '*.png' -o -iname '*.fbx' -o -iname '*.glb' -o -iname '*.ogg' -o -iname '*.wav' \) | sed 's|^|"res://|; s|$|"|' | paste -sd, -)
-          PATCH_LIST=$(find freefire -type f \( -name '*.gd' -o -name '*.tscn' \) ! -name 'boot.*' ! -name 'build_info.gd' | sed 's|^|"res://|; s|$|"|' | paste -sd, -)
+          DEMO='autoloads/*, enemies/*, level/*, menu/*, player/*, shared/*, static/*, main.gd, main.tscn, prototype.tscn'
+          EX0="$DEMO, freefire/models/*, freefire/audio/*"
+          EX1="$DEMO, icon.svg, icon.png, freefire/models/*, freefire/audio/*, freefire/boot.*, freefire/build_info.gd, freefire/probe.*"
+          EX2="$DEMO, icon.svg, icon.png, freefire/*.gd, freefire/*.tscn, freefire/models/*MP5*, freefire/models/*Mac10*"
           OPTS='custom_template/debug=""
           custom_template/release=""
           gradle_build/use_gradle_build=false
@@ -534,7 +570,6 @@ jobs:
           permissions/internet=true
           permissions/access_network_state=true
           permissions/access_wifi_state=true'
-          OPTS2=$(printf '%s' "$OPTS" | sed -e 's|com.lutfullossr.zona3|com.lutfullossr.zonalite|' -e 's|package/name="ZONA 3"|package/name="ZONA LITE"|')
           cat > export_presets.cfg <<EOF
           [preset.0]
 
@@ -547,7 +582,7 @@ jobs:
           export_filter="all_resources"
           export_files=PackedStringArray()
           include_filter=""
-          exclude_filter="autoloads/*, enemies/*, level/*, menu/*, player/*, shared/*, static/*, main.gd, main.tscn, prototype.tscn, freefire/models/*MP5*, freefire/models/*Mac10*"
+          exclude_filter="$EX0"
           export_path="build/android/zona.apk"
           encryption_include_filters=""
           encryption_exclude_filters=""
@@ -566,10 +601,10 @@ jobs:
           advanced_options=false
           dedicated_server=false
           custom_features=""
-          export_filter="resources"
-          export_files=PackedStringArray($PATCH_LIST)
+          export_filter="all_resources"
+          export_files=PackedStringArray()
           include_filter=""
-          exclude_filter=""
+          exclude_filter="$EX1"
           export_path="build/patch.pck"
           encryption_include_filters=""
           encryption_exclude_filters=""
@@ -582,7 +617,7 @@ jobs:
 
           [preset.2]
 
-          name="Lite"
+          name="Assets"
           platform="Android"
           runnable=true
           advanced_options=false
@@ -591,8 +626,8 @@ jobs:
           export_filter="all_resources"
           export_files=PackedStringArray()
           include_filter=""
-          exclude_filter="autoloads/*, enemies/*, level/*, menu/*, player/*, shared/*, static/*, main.gd, main.tscn, prototype.tscn, freefire/models/*, freefire/audio/*"
-          export_path="build/lite.apk"
+          exclude_filter="$EX2"
+          export_path="build/assets.pck"
           encryption_include_filters=""
           encryption_exclude_filters=""
           encrypt_pck=false
@@ -600,9 +635,9 @@ jobs:
 
           [preset.2.options]
 
-          $OPTS2
+          $OPTS
           EOF
-          grep -n "export_files" export_presets.cfg | cut -c1-400
+          grep -n "exclude_filter" export_presets.cfg | cut -c1-300
 
       - name: Patch project for Android (ETC2/ASTC va log)
         run: |
@@ -663,14 +698,15 @@ jobs:
           godot --headless --verbose --export-pack "Patch" build/patch.pck
           test -s build/patch.pck
           ls -la build
-          printf '{"run": %s, "assets": "%s"}\n' "$RUN" "$ASSETS" > build/latest.json
+          printf '{"run": %s, "base": "%s", "assets": "%s"}\n' "$RUN" "$BASEH" "$ASSETH" > build/latest.json
           cat build/latest.json
 
-      - name: Lite APK (modelsiz va ovozsiz variant)
+      - name: Assets pack (modellar va ovozlar, APK dan tashqarida)
         continue-on-error: true
         run: |
           cd "$GITHUB_WORKSPACE"
-          godot --headless --export-debug "Lite" build/lite.apk
+          godot --headless --verbose --export-pack "Assets" build/assets.pck
+          test -s build/assets.pck
           ls -la build
 
       - name: Probe APK (diagnostika varianti)
@@ -701,4 +737,4 @@ jobs:
             build/patch.pck
             build/latest.json
             build/probe.apk
-            build/lite.apk
+            build/assets.pck
