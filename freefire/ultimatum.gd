@@ -2,7 +2,20 @@ extends Node3D
 
 const Fighter = preload("res://freefire/fighter.gd")
 const WeaponDB = preload("res://freefire/weapons.gd")
-enum S { MENU, PICK, LIVE, END }
+enum S { MENU, PICK, LIVE, END, EDIT }
+const SETTINGS_PATH := "user://zona_settings.json"
+const DEF_LAYOUT := {
+	"fire": {"x": 0.89, "y": 0.70, "r": 82.0},
+	"fire2": {"x": 0.30, "y": 0.80, "r": 64.0},
+	"jump": {"x": 0.76, "y": 0.87, "r": 54.0},
+	"crouch": {"x": 0.755, "y": 0.62, "r": 48.0},
+	"prone": {"x": 0.65, "y": 0.80, "r": 46.0},
+	"reload": {"x": 0.93, "y": 0.40, "r": 46.0},
+	"swap": {"x": 0.83, "y": 0.42, "r": 46.0},
+	"zoom": {"x": 0.70, "y": 0.45, "r": 46.0},
+	"sprint": {"x": 0.20, "y": 0.42, "r": 46.0},
+	"pause": {"x": 0.965, "y": 0.07, "r": 34.0},
+}
 
 var state := S.MENU
 var mode_n := 1
@@ -36,6 +49,14 @@ var hitm_t := 0.0
 var hitm_head := false
 var feed: Array = []
 var sfx2d: AudioStreamPlayer
+var layout := {}
+var cfg := {"sens": 1.0, "vol": 1.0, "assist": 1.0, "autofire": true}
+var settings_panel: PanelContainer
+var edit_panel: PanelContainer
+var edit_lbl: Label
+var resume_btn: Button
+var edit_sel := ""
+var edit_drag := -1
 
 
 func _ready() -> void:
@@ -43,6 +64,7 @@ func _ready() -> void:
 	DisplayServer.screen_set_orientation(DisplayServer.SCREEN_LANDSCAPE)
 	sfx2d = AudioStreamPlayer.new()
 	add_child(sfx2d)
+	_load_settings()
 	_build_world()
 	_build_ui()
 	_show_menu("ZONA: ULTIMATUM")
@@ -163,6 +185,18 @@ func _build_ui() -> void:
 		b.add_theme_font_size_override("font_size", 34)
 		b.pressed.connect(_start_match.bind(n))
 		vb.add_child(b)
+	resume_btn = Button.new()
+	resume_btn.text = "DAVOM ETISH"
+	resume_btn.custom_minimum_size = Vector2(320, 90)
+	resume_btn.add_theme_font_size_override("font_size", 34)
+	resume_btn.pressed.connect(_resume)
+	vb.add_child(resume_btn)
+	var sb := Button.new()
+	sb.text = "SOZLAMALAR"
+	sb.custom_minimum_size = Vector2(320, 90)
+	sb.add_theme_font_size_override("font_size", 34)
+	sb.pressed.connect(_open_settings)
+	vb.add_child(sb)
 	menu_panel.add_child(vb)
 	ui.add_child(menu_panel)
 	_center(menu_panel)
@@ -189,13 +223,24 @@ func _build_ui() -> void:
 	ui.add_child(pick_panel)
 	_center(pick_panel)
 	pick_panel.visible = false
+	_build_extra_ui()
 
 
 func _show_menu(title: String) -> void:
 	menu_title.text = title
 	menu_panel.visible = true
 	pick_panel.visible = false
+	settings_panel.visible = false
+	edit_panel.visible = false
+	resume_btn.visible = (title == "PAUZA")
 	state = S.MENU
+
+
+func _resume() -> void:
+	menu_panel.visible = false
+	touch_fire = false
+	btn_ids.clear()
+	state = S.LIVE
 
 
 func _msg(s: String, t: float = 2.0) -> void:
@@ -231,6 +276,10 @@ func _give(f, i: int) -> void:
 
 func _begin_round() -> void:
 	touch_fire = false
+	btn_ids.clear()
+	stick_id = -1
+	look_id = -1
+	stick_vec = Vector2.ZERO
 	round_t = 60.0
 	zoomed = false
 	cam.fov = 75.0
@@ -393,30 +442,52 @@ func _player_input(delta: float) -> void:
 		p.pitch = clampf(p.pitch - 1.2 * delta, -1.0, 1.0)
 	if Input.is_key_pressed(KEY_SPACE):
 		p.want_jump = true
-	p.want_fire = touch_fire or Input.is_key_pressed(KEY_F)
-	if p.want_fire:
+	if p.move_input.length() < 0.1:
+		p.sprint = false
+	var fire_on := touch_fire or Input.is_key_pressed(KEY_F)
+	p.want_fire = fire_on
+	if fire_on:
 		_assist(p, delta)
+	elif bool(cfg["autofire"]) and _best_target(p, 0.05, true) != null:
+		p.want_fire = true
 
 
-func _assist(p, delta: float) -> void:
+func _best_target(p, cone: float, los: bool):
 	var best = null
-	var bd := 0.14
+	var bd := cone
 	var fwd := Basis.from_euler(Vector3(p.pitch, p.yaw, 0.0)) * Vector3(0, 0, -1)
 	var eye_p: Vector3 = p.eye()
 	for f in fighters:
-		if f.team != p.team and f.alive:
-			var dir: Vector3 = (f.aim_point(false) - eye_p).normalized()
-			var ang := fwd.angle_to(dir)
-			if ang < bd:
-				bd = ang
-				best = f
+		if f.team == p.team or not f.alive:
+			continue
+		var tp: Vector3 = f.aim_point(false)
+		var dir: Vector3 = (tp - eye_p).normalized()
+		var ang := fwd.angle_to(dir)
+		if ang >= bd:
+			continue
+		if los:
+			var q := PhysicsRayQueryParameters3D.create(eye_p, tp, 1)
+			var r := get_world_3d().direct_space_state.intersect_ray(q)
+			if not r.is_empty():
+				continue
+		bd = ang
+		best = f
+	return best
+
+
+func _assist(p, delta: float) -> void:
+	var a := float(cfg["assist"])
+	if a < 0.05:
+		return
+	var best = _best_target(p, 0.22 * a, true)
 	if best == null:
 		return
-	var dv: Vector3 = (best.aim_point(false) - eye_p).normalized()
+	var dv: Vector3 = (best.aim_point(false) - p.eye()).normalized()
 	var ty := atan2(-dv.x, -dv.z)
 	var tp := asin(clampf(dv.y, -1.0, 1.0))
-	p.yaw = lerp_angle(p.yaw, ty, clampf(4.0 * delta, 0.0, 1.0))
-	p.pitch = lerpf(p.pitch, tp, clampf(4.0 * delta, 0.0, 1.0))
+	var k := clampf(6.0 * a * delta, 0.0, 1.0)
+	p.yaw = lerp_angle(p.yaw, ty, k)
+	p.pitch = lerpf(p.pitch, tp, k)
 
 
 func _spectate_target():
@@ -448,6 +519,229 @@ func _update_cam() -> void:
 		p.use_origin = true
 
 
+# ---------- sozlamalar va tugma joylashuvi ----------
+func _load_settings() -> void:
+	layout = {}
+	for k in DEF_LAYOUT:
+		var d: Dictionary = DEF_LAYOUT[k]
+		layout[k] = {"x": d["x"], "y": d["y"], "s": 1.0, "a": 0.55}
+	if FileAccess.file_exists(SETTINGS_PATH):
+		var f := FileAccess.open(SETTINGS_PATH, FileAccess.READ)
+		if f != null:
+			var v = JSON.parse_string(f.get_as_text())
+			if v is Dictionary:
+				for k in ["sens", "vol", "assist", "autofire"]:
+					if v.has(k):
+						cfg[k] = v[k]
+				var lay = v.get("layout", {})
+				if lay is Dictionary:
+					for k in layout:
+						if lay.has(k) and lay[k] is Dictionary:
+							for kk in ["x", "y", "s", "a"]:
+								if lay[k].has(kk):
+									layout[k][kk] = float(lay[k][kk])
+	_apply_volume()
+
+
+func _save_settings() -> void:
+	var f := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
+	if f != null:
+		f.store_string(JSON.stringify({"sens": cfg["sens"], "vol": cfg["vol"], "assist": cfg["assist"], "autofire": cfg["autofire"], "layout": layout}))
+
+
+func _apply_volume() -> void:
+	AudioServer.set_bus_volume_db(0, linear_to_db(maxf(float(cfg["vol"]), 0.001)))
+
+
+func _set_cfg(key: String, v) -> void:
+	cfg[key] = v
+	if key == "vol":
+		_apply_volume()
+
+
+func _slider_row(parent: Control, title: String, mn: float, mx: float, stp: float, key: String) -> void:
+	parent.add_child(_lab(title, 26))
+	var s := HSlider.new()
+	s.min_value = mn
+	s.max_value = mx
+	s.step = stp
+	s.value = float(cfg[key])
+	s.custom_minimum_size = Vector2(560, 52)
+	s.value_changed.connect(func(v: float): _set_cfg(key, v))
+	parent.add_child(s)
+
+
+func _mini_btn(txt: String, cb: Callable, w: float = 150.0) -> Button:
+	var b := Button.new()
+	b.text = txt
+	b.custom_minimum_size = Vector2(w, 70)
+	b.add_theme_font_size_override("font_size", 24)
+	b.pressed.connect(cb)
+	return b
+
+
+func _build_extra_ui() -> void:
+	settings_panel = PanelContainer.new()
+	var sv := VBoxContainer.new()
+	sv.add_theme_constant_override("separation", 12)
+	var st := _lab("SOZLAMALAR", 36)
+	st.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	sv.add_child(st)
+	_slider_row(sv, "Burilish tezligi", 0.3, 2.5, 0.05, "sens")
+	_slider_row(sv, "Umumiy ovoz", 0.0, 1.0, 0.05, "vol")
+	_slider_row(sv, "Nishonga yordam", 0.0, 2.0, 0.1, "assist")
+	var cb := CheckButton.new()
+	cb.text = "Avto-otish (nishon dushmanda boʻlsa)"
+	cb.button_pressed = bool(cfg["autofire"])
+	cb.add_theme_font_size_override("font_size", 26)
+	cb.toggled.connect(func(on: bool): _set_cfg("autofire", on))
+	sv.add_child(cb)
+	sv.add_child(_mini_btn("TUGMALARNI JOYLASHTIRISH", _edit_start, 560.0))
+	sv.add_child(_mini_btn("SAQLASH VA ORQAGA", _close_settings, 560.0))
+	settings_panel.add_child(sv)
+	ui.add_child(settings_panel)
+	_center(settings_panel)
+	settings_panel.visible = false
+	edit_panel = PanelContainer.new()
+	var ev := VBoxContainer.new()
+	edit_lbl = _lab("", 24)
+	ev.add_child(edit_lbl)
+	var er := HBoxContainer.new()
+	er.add_theme_constant_override("separation", 8)
+	er.add_child(_mini_btn("Kichik", _edit_scale.bind(-0.1)))
+	er.add_child(_mini_btn("Katta", _edit_scale.bind(0.1)))
+	er.add_child(_mini_btn("Xira", _edit_alpha.bind(-0.1)))
+	er.add_child(_mini_btn("Quyuq", _edit_alpha.bind(0.1)))
+	er.add_child(_mini_btn("Tiklash", _edit_reset))
+	er.add_child(_mini_btn("Saqlash", _edit_done))
+	ev.add_child(er)
+	edit_panel.add_child(ev)
+	ui.add_child(edit_panel)
+	edit_panel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	edit_panel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	edit_panel.visible = false
+
+
+func _open_settings() -> void:
+	menu_panel.visible = false
+	settings_panel.visible = true
+
+
+func _close_settings() -> void:
+	_save_settings()
+	settings_panel.visible = false
+	_show_menu(menu_title.text)
+
+
+func _edit_start() -> void:
+	settings_panel.visible = false
+	edit_panel.visible = true
+	edit_sel = "fire"
+	edit_drag = -1
+	state = S.EDIT
+	_update_edit_label()
+
+
+func _edit_done() -> void:
+	_save_settings()
+	edit_panel.visible = false
+	settings_panel.visible = true
+	state = S.MENU
+
+
+func _edit_reset() -> void:
+	for k in DEF_LAYOUT:
+		var d: Dictionary = DEF_LAYOUT[k]
+		layout[k] = {"x": d["x"], "y": d["y"], "s": 1.0, "a": 0.55}
+	_update_edit_label()
+
+
+func _edit_scale(d: float) -> void:
+	if edit_sel != "":
+		layout[edit_sel]["s"] = clampf(float(layout[edit_sel]["s"]) + d, 0.5, 2.4)
+		_update_edit_label()
+
+
+func _edit_alpha(d: float) -> void:
+	if edit_sel != "":
+		layout[edit_sel]["a"] = clampf(float(layout[edit_sel]["a"]) + d, 0.15, 1.0)
+		_update_edit_label()
+
+
+func _update_edit_label() -> void:
+	if edit_sel == "":
+		edit_lbl.text = "Tugmani ushlab suring"
+	else:
+		edit_lbl.text = "Tugmani ushlab suring.   Tanlangan: %s   kattaligi %d%%   zichligi %d%%" % [edit_sel.to_upper(), int(float(layout[edit_sel]["s"]) * 100.0), int(float(layout[edit_sel]["a"]) * 100.0)]
+
+
+func _edit_input(e: InputEvent) -> void:
+	var vs := get_viewport().get_visible_rect().size
+	if e is InputEventScreenTouch:
+		if e.pressed:
+			var b := _btn_at(e.position)
+			if b != "":
+				edit_sel = b
+				edit_drag = e.index
+				_update_edit_label()
+		elif e.index == edit_drag:
+			edit_drag = -1
+	elif e is InputEventScreenDrag and e.index == edit_drag and edit_sel != "":
+		layout[edit_sel]["x"] = clampf(e.position.x / vs.x, 0.03, 0.97)
+		layout[edit_sel]["y"] = clampf(e.position.y / vs.y, 0.05, 0.95)
+
+
+func _icon(n: String, c: Vector2, r: float, col: Color) -> void:
+	var u := r * 0.5
+	var w := maxf(3.0, r * 0.09)
+	match n:
+		"fire":
+			hud.draw_arc(c, u * 1.1, 0.0, TAU, 24, col, w)
+			hud.draw_circle(c, u * 0.28, col)
+			for d in [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1)]:
+				hud.draw_line(c + d * u * 1.45, c + d * u * 0.8, col, w)
+		"jump":
+			hud.draw_line(c + Vector2(-u, u * 0.3), c + Vector2(0, -u * 0.6), col, w)
+			hud.draw_line(c + Vector2(u, u * 0.3), c + Vector2(0, -u * 0.6), col, w)
+			hud.draw_line(c + Vector2(-u, u * 0.95), c + Vector2(0, 0.05 * u), col, w)
+			hud.draw_line(c + Vector2(u, u * 0.95), c + Vector2(0, 0.05 * u), col, w)
+		"crouch":
+			hud.draw_circle(c + Vector2(-u * 0.1, -u * 0.85), u * 0.28, col)
+			hud.draw_line(c + Vector2(-u * 0.1, -u * 0.5), c + Vector2(-u * 0.1, u * 0.1), col, w)
+			hud.draw_line(c + Vector2(-u * 0.1, u * 0.1), c + Vector2(u * 0.6, u * 0.1), col, w)
+			hud.draw_line(c + Vector2(u * 0.6, u * 0.1), c + Vector2(u * 0.6, u * 0.85), col, w)
+			hud.draw_line(c + Vector2(-u * 0.1, -u * 0.35), c + Vector2(u * 0.5, -u * 0.1), col, w)
+		"prone":
+			hud.draw_circle(c + Vector2(-u * 0.95, u * 0.1), u * 0.26, col)
+			hud.draw_line(c + Vector2(-u * 0.6, u * 0.15), c + Vector2(u * 0.9, u * 0.15), col, w)
+			hud.draw_line(c + Vector2(u * 0.9, u * 0.15), c + Vector2(u * 1.15, u * 0.5), col, w)
+			hud.draw_line(c + Vector2(-u * 0.3, u * 0.15), c + Vector2(-u * 0.1, -u * 0.3), col, w)
+		"reload":
+			hud.draw_arc(c, u, 0.6, TAU - 0.4, 24, col, w)
+			var tip := c + Vector2(cos(0.6), sin(0.6)) * u
+			hud.draw_line(tip, tip + Vector2(u * 0.5, -u * 0.05), col, w)
+			hud.draw_line(tip, tip + Vector2(u * 0.05, -u * 0.55), col, w)
+		"swap":
+			hud.draw_line(c + Vector2(-u, -u * 0.35), c + Vector2(u, -u * 0.35), col, w)
+			hud.draw_line(c + Vector2(u, -u * 0.35), c + Vector2(u * 0.5, -u * 0.75), col, w)
+			hud.draw_line(c + Vector2(u, -u * 0.35), c + Vector2(u * 0.5, u * 0.05), col, w)
+			hud.draw_line(c + Vector2(u, u * 0.45), c + Vector2(-u, u * 0.45), col, w)
+			hud.draw_line(c + Vector2(-u, u * 0.45), c + Vector2(-u * 0.5, u * 0.05), col, w)
+			hud.draw_line(c + Vector2(-u, u * 0.45), c + Vector2(-u * 0.5, u * 0.85), col, w)
+		"zoom":
+			hud.draw_arc(c, u * 1.1, 0.0, TAU, 24, col, w)
+			hud.draw_line(c + Vector2(-u * 1.5, 0), c + Vector2(u * 1.5, 0), col, maxf(2.0, w * 0.6))
+			hud.draw_line(c + Vector2(0, -u * 1.5), c + Vector2(0, u * 1.5), col, maxf(2.0, w * 0.6))
+		"sprint":
+			hud.draw_line(c + Vector2(-u, -u * 0.8), c + Vector2(0, 0), col, w)
+			hud.draw_line(c + Vector2(0, 0), c + Vector2(-u, u * 0.8), col, w)
+			hud.draw_line(c + Vector2(u * 0.1, -u * 0.8), c + Vector2(u * 1.1, 0), col, w)
+			hud.draw_line(c + Vector2(u * 1.1, 0), c + Vector2(u * 0.1, u * 0.8), col, w)
+		"pause":
+			hud.draw_rect(Rect2(c + Vector2(-u * 0.55, -u * 0.7), Vector2(u * 0.4, u * 1.4)), col)
+			hud.draw_rect(Rect2(c + Vector2(u * 0.15, -u * 0.7), Vector2(u * 0.4, u * 1.4)), col)
+
+
 func _toggle_stance(s: int) -> void:
 	if player != null and player.alive:
 		player.stance = 0 if player.stance == s else s
@@ -455,23 +749,25 @@ func _toggle_stance(s: int) -> void:
 
 func _btns() -> Array:
 	var vs := get_viewport().get_visible_rect().size
-	return [
-		["fire", Vector2(vs.x - 130, vs.y - 140), 65.0, "OT"],
-		["jump", Vector2(vs.x - 260, vs.y - 80), 40.0, "SAK"],
-		["crouch", Vector2(vs.x - 250, vs.y - 190), 36.0, "CHO"],
-		["prone", Vector2(vs.x - 340, vs.y - 130), 36.0, "YOT"],
-		["reload", Vector2(vs.x - 80, vs.y - 280), 36.0, "ZAR"],
-		["swap", Vector2(vs.x - 340, vs.y - 230), 34.0, "QUR"],
-		["zoom", Vector2(vs.x - 190, vs.y - 270), 34.0, "NIS"],
-		["pause", Vector2(vs.x - 50, 50), 28.0, "II"],
-	]
+	var k := vs.y / 720.0
+	var out: Array = []
+	for n in DEF_LAYOUT:
+		var l: Dictionary = layout[n]
+		var base: float = DEF_LAYOUT[n]["r"]
+		var ic: String = "fire" if n == "fire2" else n
+		out.append([n, Vector2(float(l["x"]) * vs.x, float(l["y"]) * vs.y), base * float(l["s"]) * k, ic, float(l["a"])])
+	return out
 
 
 func _btn_at(p: Vector2) -> String:
+	var best := ""
+	var bd := 1e9
 	for b in _btns():
-		if p.distance_to(b[1]) <= b[2] + 12.0:
-			return b[0]
-	return ""
+		var d: float = p.distance_to(b[1])
+		if d <= float(b[2]) + 8.0 and d < bd:
+			bd = d
+			best = b[0]
+	return best
 
 
 func _btn_down(n: String) -> void:
@@ -481,7 +777,7 @@ func _btn_down(n: String) -> void:
 	if player == null or not player.alive:
 		return
 	match n:
-		"fire":
+		"fire", "fire2":
 			touch_fire = true
 		"jump":
 			player.want_jump = true
@@ -495,9 +791,14 @@ func _btn_down(n: String) -> void:
 			player.swap()
 		"zoom":
 			zoomed = not zoomed
+		"sprint":
+			player.sprint = not player.sprint
 
 
 func _input(e: InputEvent) -> void:
+	if state == S.EDIT:
+		_edit_input(e)
+		return
 	if state != S.LIVE and state != S.END:
 		return
 	if e is InputEventKey and e.pressed and not e.echo:
@@ -514,6 +815,9 @@ func _input(e: InputEvent) -> void:
 					player.swap()
 			KEY_V:
 				zoomed = not zoomed
+			KEY_SHIFT:
+				if player != null:
+					player.sprint = not player.sprint
 		return
 	var vs := get_viewport().get_visible_rect().size
 	if e is InputEventScreenTouch:
@@ -530,9 +834,9 @@ func _input(e: InputEvent) -> void:
 				look_id = e.index
 		else:
 			if btn_ids.has(e.index):
-				if btn_ids[e.index] == "fire":
-					touch_fire = false
 				btn_ids.erase(e.index)
+				var vals: Array = btn_ids.values()
+				touch_fire = vals.has("fire") or vals.has("fire2")
 			if e.index == stick_id:
 				stick_id = -1
 				stick_vec = Vector2.ZERO
@@ -542,9 +846,9 @@ func _input(e: InputEvent) -> void:
 		if e.index == stick_id:
 			stick_vec = ((e.position - stick_origin) / 70.0).limit_length(1.0)
 		elif e.index == look_id and player != null:
-			var sens := 0.45 if zoomed else 1.0
-			player.yaw -= e.relative.x * 0.005 * sens
-			player.pitch = clampf(player.pitch - e.relative.y * 0.004 * sens, -1.0, 1.0)
+			var sens := (0.45 if zoomed else 1.0) * float(cfg["sens"])
+			player.yaw -= e.relative.x * 0.0065 * sens
+			player.pitch = clampf(player.pitch - e.relative.y * 0.005 * sens, -1.0, 1.0)
 
 
 # ---------- har kadr ----------
@@ -597,9 +901,14 @@ func _process(delta: float) -> void:
 
 
 func _draw_hud() -> void:
+	var vs := get_viewport().get_visible_rect().size
+	if state == S.EDIT:
+		hud.draw_rect(Rect2(Vector2.ZERO, vs), Color(0, 0, 0, 0.45))
+		for b in _btns():
+			_draw_button(b, false, b[0] == edit_sel)
+		return
 	if state == S.MENU or player == null:
 		return
-	var vs := get_viewport().get_visible_rect().size
 	var c := vs * 0.5
 	for d in [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1)]:
 		hud.draw_line(c + d * 4.0, c + d * 14.0, Color.WHITE, 2.0)
@@ -616,10 +925,27 @@ func _draw_hud() -> void:
 	for i in range(feed.size()):
 		hud.draw_string(ThemeDB.fallback_font, Vector2(vs.x - 560, 110 + i * 30), str(feed[i]["s"]), HORIZONTAL_ALIGNMENT_RIGHT, 520.0, 22)
 	if stick_id != -1:
-		hud.draw_circle(stick_origin, 70.0, Color(1, 1, 1, 0.15))
-		hud.draw_circle(stick_origin + stick_vec * 70.0, 30.0, Color(1, 1, 1, 0.4))
+		hud.draw_circle(stick_origin, 80.0, Color(1, 1, 1, 0.14))
+		hud.draw_arc(stick_origin, 80.0, 0.0, TAU, 32, Color(1, 1, 1, 0.4), 3.0)
+		hud.draw_circle(stick_origin + stick_vec * 80.0, 34.0, Color(1, 1, 1, 0.45))
 	var down: Array = btn_ids.values()
 	for b in _btns():
-		var a := 0.7 if down.has(b[0]) else 0.35
-		hud.draw_circle(b[1], b[2], Color(1.0, 0.55, 0.1, a))
-		hud.draw_string(ThemeDB.fallback_font, b[1] + Vector2(-b[2], 10), b[3], HORIZONTAL_ALIGNMENT_CENTER, b[2] * 2.0, 26)
+		var on: bool = down.has(b[0])
+		if b[0] == "zoom" and zoomed:
+			on = true
+		if b[0] == "sprint" and player.sprint:
+			on = true
+		_draw_button(b, on, false)
+
+
+func _draw_button(b: Array, on: bool, sel: bool) -> void:
+	var a: float = b[4]
+	var pos: Vector2 = b[1]
+	var r: float = b[2]
+	hud.draw_circle(pos, r, Color(0.05, 0.06, 0.09, minf(0.9, a * (1.4 if on else 0.9))))
+	var ring := Color(1.0, 0.8, 0.2, 0.95) if (on or sel) else Color(1, 1, 1, minf(1.0, a + 0.3))
+	hud.draw_arc(pos, r, 0.0, TAU, 40, ring, 4.0 if sel else 3.0)
+	var ic := Color(1.0, 0.8, 0.2, 1.0) if on else Color(1, 1, 1, minf(1.0, a + 0.45))
+	_icon(b[3], pos, r, ic)
+
+

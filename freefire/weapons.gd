@@ -14,4 +14,8 @@ const W := [
 	{"n": "M249", "s": "lmg", "rc": 0.5, "dmg": 20, "rate": 0.08, "mag": 100, "rl": 3.5, "spread": 0.02, "pel": 1},
 	{"n": "USP", "s": "pistol", "rc": 0.6, "dmg": 18, "rate": 0.28, "mag": 12, "rl": 1.1, "spread": 0.015, "pel": 1},
 	{"n": "DESERT EAGLE", "s": "pistol", "rc": 1.2, "dmg": 48, "rate": 0.6, "mag": 7, "rl": 1.5, "spread": 0.01, "pel": 1},
+	{"n": "M82B", "s": "sniper", "rc": 2.6, "dmg": 100, "rate": 1.6, "mag": 5, "rl": 2.4, "spread": 0.001, "pel": 1},
+	{"n": "M590", "s": "shotgun", "rc": 1.5, "dmg": 12, "rate": 0.85, "mag": 8, "rl": 1.9, "spread": 0.05, "pel": 8},
+	{"n": "P90", "s": "smg", "rc": 0.3, "dmg": 14, "rate": 0.065, "mag": 50, "rl": 1.6, "spread": 0.025, "pel": 1},
+	{"n": "SKS", "s": "ar", "rc": 0.9, "dmg": 34, "rate": 0.3, "mag": 10, "rl": 1.9, "spread": 0.008, "pel": 1},
 ]

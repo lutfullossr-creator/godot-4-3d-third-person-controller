@@ -104,6 +104,7 @@ var vis: Node3D
 var leg_l: Node3D
 var leg_r: Node3D
 var anim_t := 0.0
+var sprint := false
 var death_tw: Tween
 var slot := 0
 var slot_wid := [0, 11]
@@ -501,6 +502,7 @@ func reset(pos: Vector3, y: float) -> void:
 	head_col.disabled = false
 	if death_tw != null:
 		death_tw.kill()
+	sprint = false
 	vis.rotation.x = 0.0
 	vis.position.y = 0.0
 	vis.scale = Vector3.ONE
@@ -554,7 +556,7 @@ func try_fire() -> void:
 	cd = w["rate"] * (1.8 if is_bot else 1.0)
 	kick = minf(kick + float(w["rc"]), 3.0)
 	flash_t = 0.05
-	_play(_snd("shot_" + str(w["s"])), -1.0, 0.04)
+	_play(_snd("shot_" + str(w["n"]).to_lower().replace(" ", "_"), "shot_" + str(w["s"])), -1.0, 0.04)
 	var from := origin_override if use_origin else eye()
 	var space := get_world_3d().direct_space_state
 	var mpos := muzzle.global_position
@@ -600,6 +602,10 @@ func _physics_process(delta: float) -> void:
 		if rl <= 0.0:
 			mag = WeaponDB.W[wid]["mag"]
 	var spd: float = SPEED[stance]
+	if sprint and stance == 0:
+		spd *= 1.6
+	if move_input.length() < 0.1:
+		sprint = false
 	var dir := Basis(Vector3.UP, yaw) * Vector3(move_input.x, 0.0, move_input.y)
 	velocity.x = dir.x * spd
 	velocity.z = dir.z * spd
