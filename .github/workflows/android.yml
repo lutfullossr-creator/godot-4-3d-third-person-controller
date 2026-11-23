@@ -93,6 +93,7 @@ jobs:
           var remote := {}
           var dl_kind := ""
           var tried := {}
+          var net_note := "?"
 
 
           func _ready() -> void:
@@ -201,6 +202,7 @@ jobs:
               add_child(http)
               http.request_completed.connect(_on_info)
               if http.request(BASE_URL + "latest.json") != OK:
+                  net_note = "request xato"
                   http.queue_free()
                   http = null
                   _continue()
@@ -210,12 +212,15 @@ jobs:
               http.queue_free()
               http = null
               if result != HTTPRequest.RESULT_SUCCESS or code != 200:
+                  net_note = "xato %d/%d" % [result, code]
                   _continue()
                   return
               var v = JSON.parse_string(body.get_string_from_utf8())
               if not (v is Dictionary):
+                  net_note = "json xato"
                   _continue()
                   return
+              net_note = "ok"
               remote = v
               if str(remote.get("base", "")) != BI.BASE:
                   _need_apk()
@@ -271,6 +276,7 @@ jobs:
                   if d != null:
                       d.remove(dl)
                   lbl.text = "Yuklanmadi (" + dl_kind + "), davom etamiz..."
+                  net_note += " dl-" + dl_kind + "-xato %d/%d" % [result, code]
                   await get_tree().create_timer(1.2).timeout
                   _next_download()
                   return
@@ -307,6 +313,10 @@ jobs:
               if not ResourceLoader.exists(MAIN):
                   _fail("Sahna topilmadi: " + MAIN + "\n\nfreefire papkasi: " + _ls("res://freefire"))
                   return
+              var ak := "ha" if ResourceLoader.exists("res://freefire/models/SKM_AK47.fbx") else "yoq"
+              var sn := "ha" if ResourceLoader.exists("res://freefire/audio/hit.ogg") else "yoq"
+              var ah := assets_have if assets_have != "" else "YOQ"
+              Engine.set_meta("zona_stat", "v%d  paket=%s  model=%s  ovoz=%s  tarmoq=%s" % [cur_run, ah, ak, sn, net_note])
               ResourceLoader.load_threaded_request(MAIN)
               state = "load"
 
@@ -402,7 +412,7 @@ jobs:
               var nm := "-"
               if sc != null:
                   nm = str(sc.name)
-              lbl.text = "t=%d  FPS=%d  sahna=%s\n%s" % [int(tt), int(Engine.get_frames_per_second()), nm, _errors()]
+              lbl.text = "t=%d  FPS=%d  sahna=%s\n%s\n%s" % [int(tt), int(Engine.get_frames_per_second()), nm, str(Engine.get_meta("zona_stat", "")), _errors()]
 
 
           func _errors() -> String:
