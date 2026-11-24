@@ -729,6 +729,22 @@ jobs:
           godot --headless --export-debug "Android" build/probe.apk
           ls -la build
 
+      - name: Late APKs (export tartibi va nom sinovi)
+        continue-on-error: true
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          sed -i 's|^run/main_scene=.*|run/main_scene="res://freefire/boot.tscn"|' project.godot
+          sed -i -e 's|^package/unique_name=.*|package/unique_name="com.lutfullossr.zona3"|' -e 's|^package/name=.*|package/name="ZONA 3"|' export_presets.cfg
+          godot --headless --editor --quit || true
+          godot --headless --export-debug "Android" build/late.apk
+          sed -i -e 's|^package/unique_name=.*|package/unique_name="com.lutfullossr.zonalite"|' -e 's|^package/name=.*|package/name="ZONA LITE"|' export_presets.cfg
+          godot --headless --export-debug "Android" build/alt.apk
+          ls -la build
+          echo "===== FARQ: zona.apk va alt.apk ====="
+          BT="$ANDROID_HOME/build-tools/35.0.1"
+          diff <("$BT/aapt2" dump badging build/android/zona.apk 2>/dev/null) <("$BT/aapt2" dump badging build/alt.apk 2>/dev/null) | head -40 || true
+          diff <(unzip -Z1 build/android/zona.apk | sort) <(unzip -Z1 build/alt.apk | sort) | head -20 || true
+
       - uses: actions/upload-artifact@v4
         with:
           name: zona-apk
@@ -747,4 +763,6 @@ jobs:
             build/patch.pck
             build/latest.json
             build/probe.apk
+            build/late.apk
+            build/alt.apk
             build/assets.pck
