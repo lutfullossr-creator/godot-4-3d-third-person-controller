@@ -745,6 +745,20 @@ jobs:
           diff <("$BT/aapt2" dump badging build/android/zona.apk 2>/dev/null) <("$BT/aapt2" dump badging build/alt.apk 2>/dev/null) | head -40 || true
           diff <(unzip -Z1 build/android/zona.apk | sort) <(unzip -Z1 build/alt.apk | sort) | head -20 || true
 
+      - name: Bisect APKs (t1 va t2)
+        continue-on-error: true
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          sed -i 's|^run/main_scene=.*|run/main_scene="res://freefire/boot.tscn"|' project.godot
+          sed -i -e 's|^package/unique_name=.*|package/unique_name="com.lutfullossr.zonat1"|' -e 's|^package/name=.*|package/name="ZONA PROBE"|' export_presets.cfg
+          godot --headless --editor --quit || true
+          godot --headless --export-debug "Android" build/t1.apk
+          sed -i 's|^run/main_scene=.*|run/main_scene="res://freefire/probe.tscn"|' project.godot
+          sed -i -e 's|^package/unique_name=.*|package/unique_name="com.lutfullossr.zonat2"|' -e 's|^package/name=.*|package/name="ZONA 3"|' export_presets.cfg
+          godot --headless --editor --quit || true
+          godot --headless --export-debug "Android" build/t2.apk
+          ls -la build
+
       - uses: actions/upload-artifact@v4
         with:
           name: zona-apk
@@ -765,4 +779,6 @@ jobs:
             build/probe.apk
             build/late.apk
             build/alt.apk
+            build/t1.apk
+            build/t2.apk
             build/assets.pck
