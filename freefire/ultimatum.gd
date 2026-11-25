@@ -30,6 +30,9 @@ var look_id := -1
 var btn_ids := {}
 var touch_fire := false
 var aim_lvl := 1
+var chars: Array = []
+var sel_char := 0
+var char_btn: Button
 var drag_t := 0.0
 const AIM_NAMES := ["KAM", "ORTA", "KO'P"]
 const AIM_CONE := [0.08, 0.14, 0.22]
@@ -162,6 +165,11 @@ func _build_ui() -> void:
 	menu_title = _lab("", 40)
 	menu_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	vb.add_child(menu_title)
+	char_btn = Button.new()
+	char_btn.custom_minimum_size = Vector2(320, 80)
+	char_btn.add_theme_font_size_override("font_size", 30)
+	char_btn.pressed.connect(_next_char)
+	vb.add_child(char_btn)
 	for n in [1, 2]:
 		var b := Button.new()
 		b.text = "%d VA %d" % [n, n]
@@ -197,7 +205,33 @@ func _build_ui() -> void:
 	pick_panel.visible = false
 
 
+func _scan_chars() -> void:
+	chars = []
+	for fn in DirAccess.get_files_at("res://freefire/models"):
+		var n: String = fn.trim_suffix(".remap").trim_suffix(".import")
+		if (n.ends_with(".fbx") or n.ends_with(".glb") or n.ends_with(".gltf")) and not n.begins_with("SKM_") and not chars.has(n):
+			chars.append(n)
+	chars.sort()
+	sel_char = clampi(sel_char, 0, maxi(chars.size() - 1, 0))
+
+
+func _refresh_char_btn() -> void:
+	if chars.is_empty():
+		char_btn.text = "PERSONAJ: standart"
+	else:
+		char_btn.text = "PERSONAJ: " + str(chars[sel_char]).get_basename()
+
+
+func _next_char() -> void:
+	if chars.is_empty():
+		return
+	sel_char = (sel_char + 1) % chars.size()
+	_refresh_char_btn()
+
+
 func _show_menu(title: String) -> void:
+	_scan_chars()
+	_refresh_char_btn()
 	menu_title.text = title
 	menu_panel.visible = true
 	pick_panel.visible = false
@@ -225,6 +259,9 @@ func _start_match(n: int) -> void:
 			add_child(f)
 			f.hit_info.connect(_on_hit)
 			fighters.append(f)
+			if not chars.is_empty():
+				var ci: int = sel_char if (t == 0 and k == 0) else randi() % chars.size()
+				f.set_character("res://freefire/models/" + str(chars[ci]))
 			if t == 0 and k == 0:
 				player = f
 	menu_panel.visible = false

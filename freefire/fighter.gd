@@ -104,7 +104,6 @@ var vis: Node3D
 var leg_l: Node3D
 var leg_r: Node3D
 var anim_t := 0.0
-var sprint := false
 var death_tw: Tween
 var slot := 0
 var slot_wid := [0, 11]
@@ -502,7 +501,6 @@ func reset(pos: Vector3, y: float) -> void:
 	head_col.disabled = false
 	if death_tw != null:
 		death_tw.kill()
-	sprint = false
 	vis.rotation.x = 0.0
 	vis.position.y = 0.0
 	vis.scale = Vector3.ONE
@@ -556,7 +554,7 @@ func try_fire() -> void:
 	cd = w["rate"] * (1.8 if is_bot else 1.0)
 	kick = minf(kick + float(w["rc"]), 3.0)
 	flash_t = 0.05
-	_play(_snd("shot_" + str(w["n"]).to_lower().replace(" ", "_"), "shot_" + str(w["s"])), -1.0, 0.04)
+	_play(_snd("shot_" + str(w["s"])), -1.0, 0.04)
 	var from := origin_override if use_origin else eye()
 	var space := get_world_3d().direct_space_state
 	var mpos := muzzle.global_position
@@ -602,10 +600,6 @@ func _physics_process(delta: float) -> void:
 		if rl <= 0.0:
 			mag = WeaponDB.W[wid]["mag"]
 	var spd: float = SPEED[stance]
-	if sprint and stance == 0:
-		spd *= 1.6
-	if move_input.length() < 0.1:
-		sprint = false
 	var dir := Basis(Vector3.UP, yaw) * Vector3(move_input.x, 0.0, move_input.y)
 	velocity.x = dir.x * spd
 	velocity.z = dir.z * spd
@@ -659,3 +653,80 @@ func _physics_process(delta: float) -> void:
 	vis.scale.y = lerpf(vis.scale.y, want_sy, delta * 12.0)
 	gun_root.rotation.x = kick * 0.05 + tilt
 	gun_root.position = Vector3(0.22, bob, -0.15 + kick * 0.04)
+
+# ---------- tayyor personaj modeli ----------
+func set_character(path: String) -> void:
+	if path == "" or not ResourceLoader.exists(path):
+		return
+	var ps = load(path)
+	if not (ps is PackedScene):
+		return
+	var m: Node3D = ps.instantiate()
+	for c in vis.get_children():
+		if c is Node3D:
+			c.visible = false
+	for c in gun_root.get_children():
+		if c is MeshInstance3D and c.mesh is BoxMesh:
+			c.visible = false
+	vis.add_child(m)
+	m.rotation.y = PI
+	var mn := Vector3(1e9, 1e9, 1e9)
+	var mx := Vector3(-1e9, -1e9, -1e9)
+	for mi in m.find_children("*", "MeshInstance3D", true, false):
+		var t: Transform3D = vis.global_transform.affine_inverse() * mi.global_transform
+		var a: AABB = t * mi.get_aabb()
+		mn = mn.min(a.position)
+		mx = mx.max(a.end)
+	var h := mx.y - mn.y
+	if h > 0.01:
+		var s := 1.75 / h
+		m.scale = m.scale * s
+		m.position = Vector3(-(mn.x + mx.x) * 0.5 * s, -mn.y * s, -(mn.z + mx.z) * 0.5 * s)
+	_char_pose(m)
+
+
+func _char_pose(m: Node3D) -> void:
+	for ap in m.find_children("*", "AnimationPlayer", true, false):
+		var names: Array = []
+		for n in ap.get_animation_list():
+			if str(n) != "RESET":
+				names.append(str(n))
+		if names.is_empty():
+			continue
+		var pick: String = names[0]
+		for n in names:
+			if n.to_lower().contains("rifle") or n.to_lower().contains("idle"):
+				pick = n
+				break
+		var an: Animation = ap.get_animation(pick)
+		if an:
+			an.loop_mode = Animation.LOOP_LINEAR
+		ap.play(pick)
+		return
+	for sk in m.find_children("*", "Skeleton3D", true, false):
+		_arms_down(sk)
+
+
+func _arms_down(sk: Skeleton3D) -> void:
+	for i in range(sk.get_bone_count()):
+		var nm := sk.get_bone_name(i).to_lower()
+		if not (nm.ends_with("leftarm") or nm.ends_with("rightarm")):
+			continue
+		var kids := sk.get_bone_children(i)
+		if kids.is_empty():
+			continue
+		var j: int = kids[0]
+		var gi := sk.get_bone_global_rest(i)
+		var gj := sk.get_bone_global_rest(j)
+		var dir := (gj.origin - gi.origin).normalized()
+		var sgn := 1.0 if dir.x >= 0.0 else -1.0
+		var target := Vector3(0.12 * sgn, -1.0, -0.25).normalized()
+		if dir.dot(target) < -0.99:
+			continue
+		var q := Quaternion(dir, target)
+		var par := sk.get_bone_parent(i)
+		var pg := Basis.IDENTITY
+		if par >= 0:
+			pg = sk.get_bone_global_rest(par).basis
+		var loc := pg.inverse() * (Basis(q) * gi.basis)
+		sk.set_bone_pose_rotation(i, loc.orthonormalized().get_rotation_quaternion())
