@@ -19,6 +19,66 @@ const MODELS := {
 }
 const MODEL_FOR := {"M4A1": "AK47", "AK47": "AK47", "SCAR": "AK47", "AWM": "M700", "KAR98K": "M700"}
 
+static var _guns_files: Array = []
+static var _guns_scanned := false
+static var _extra := {}
+const GUN_LEN := {"ar": 0.95, "smg": 0.62, "shotgun": 1.0, "sniper": 1.15, "lmg": 1.05, "pistol": 0.26}
+const GUN_KEYS := {
+	"ar": ["ak", "rifle", "assault", "m4", "scar"],
+	"smg": ["smg", "mp5", "ump", "vector", "p90", "uzi", "submachine"],
+	"sniper": ["sniper", "awm", "kar", "m82", "sks", "bolt"],
+	"shotgun": ["shotgun", "spas", "m1887", "m590", "pump"],
+	"pistol": ["pistol", "usp", "eagle", "revolver", "glock", "handgun"],
+	"lmg": ["lmg", "machine", "m249", "minigun", "heavy"],
+}
+
+
+static func _scan_guns() -> void:
+	if _guns_scanned:
+		return
+	_guns_scanned = true
+	var out: Array = []
+	for fn in DirAccess.get_files_at("res://freefire/models/guns"):
+		var n: String = fn.trim_suffix(".remap").trim_suffix(".import")
+		if (n.ends_with(".glb") or n.ends_with(".gltf") or n.ends_with(".fbx")) and not out.has(n):
+			out.append(n)
+	_guns_files = out
+
+
+static func _plain(s: String) -> String:
+	var r := ""
+	for ch in s.to_lower():
+		if (ch >= "a" and ch <= "z") or (ch >= "0" and ch <= "9"):
+			r += ch
+	return r
+
+
+static func guns_key(w: Dictionary) -> String:
+	_scan_guns()
+	if _guns_files.is_empty():
+		return ""
+	var nm := _plain(str(w["n"]))
+	var pick := ""
+	for fl in _guns_files:
+		var st := _plain(str(fl).get_basename())
+		if st.length() >= 2 and (st.contains(nm) or nm.contains(st)):
+			pick = str(fl)
+			break
+	if pick == "":
+		for kw in GUN_KEYS.get(str(w["s"]), []):
+			for fl in _guns_files:
+				if _plain(str(fl).get_basename()).contains(str(kw)):
+					pick = str(fl)
+					break
+			if pick != "":
+				break
+	if pick == "":
+		return ""
+	var key := "G:" + pick + ":" + str(w["s"])
+	_extra[key] = {"path": "res://freefire/models/guns/" + pick, "tex": "", "len": GUN_LEN.get(str(w["s"]), 0.9)}
+	return key
+
+
 const DK := Color(0.1, 0.1, 0.11)
 const MT := Color(0.32, 0.32, 0.34)
 const WD := Color(0.42, 0.27, 0.13)
@@ -104,6 +164,8 @@ var vis: Node3D
 var leg_l: Node3D
 var leg_r: Node3D
 var anim_t := 0.0
+var sprint_blend := 0.0
+var was_air := false
 var sprint := false
 var death_tw: Tween
 var slot := 0
@@ -234,6 +296,64 @@ func setup(t: int, bot: bool) -> void:
 	_build_gun()
 
 
+static func synth(sname: String):
+	var ck := "syn_" + sname
+	if _snd_cache.has(ck):
+		return _snd_cache[ck]
+	var rate := 22050
+	var n := 0
+	var data := PackedByteArray()
+	var s := AudioStreamWAV.new()
+	s.format = AudioStreamWAV.FORMAT_16_BITS
+	if sname == "step":
+		n = 2600
+		data.resize(n * 2)
+		var lp := 0.0
+		for i in range(n):
+			var t := float(i) / float(n)
+			lp = lp * 0.85 + (randf() * 2.0 - 1.0) * 0.15
+			data.encode_s16(i * 2, int(clampf(lp * exp(-t * 7.0) * 2.4, -1.0, 1.0) * 30000.0))
+	elif sname == "ui":
+		n = 2000
+		data.resize(n * 2)
+		for i in range(n):
+			var t2 := float(i) / float(n)
+			var v2 := sin(TAU * 1150.0 * float(i) / float(rate)) * exp(-t2 * 8.0) * 0.5
+			data.encode_s16(i * 2, int(clampf(v2, -1.0, 1.0) * 30000.0))
+	elif sname == "dry":
+		n = 1500
+		data.resize(n * 2)
+		for i in range(n):
+			var t3 := float(i) / float(n)
+			var v3 := (randf() * 2.0 - 1.0) * exp(-t3 * 14.0) * 0.6
+			data.encode_s16(i * 2, int(clampf(v3, -1.0, 1.0) * 30000.0))
+	elif sname == "music":
+		rate = 11025
+		var seg := rate * 2
+		var chords := [[110.0, 130.81, 164.81], [87.31, 130.81, 174.61], [130.81, 164.81, 196.0], [98.0, 146.83, 196.0]]
+		n = seg * 4
+		data.resize(n * 2)
+		for i in range(n):
+			var ci: int = i / seg
+			var tt := float(i % seg) / float(seg)
+			var env := sin(PI * tt)
+			var tm := float(i) / float(rate)
+			var v4 := 0.0
+			for fr in chords[ci]:
+				v4 += sin(TAU * float(fr) * tm) + 0.4 * sin(TAU * float(fr) * 2.0 * tm)
+			v4 *= env * 0.1 * (0.85 + 0.15 * sin(TAU * 0.25 * tm))
+			data.encode_s16(i * 2, int(clampf(v4, -1.0, 1.0) * 30000.0))
+		s.loop_mode = AudioStreamWAV.LOOP_FORWARD
+		s.loop_begin = 0
+		s.loop_end = n
+	else:
+		return null
+	s.mix_rate = rate
+	s.data = data
+	_snd_cache[ck] = s
+	return s
+
+
 func _snd(sname: String, fallback: String = "") -> AudioStream:
 	if not _snd_cache.has(sname):
 		var res = null
@@ -242,6 +362,8 @@ func _snd(sname: String, fallback: String = "") -> AudioStream:
 			if ResourceLoader.exists(p):
 				res = load(p)
 				break
+		if res == null:
+			res = synth(sname)
 		_snd_cache[sname] = res
 	var r = _snd_cache[sname]
 	if r == null and fallback != "":
@@ -354,7 +476,7 @@ func _compute_fit(holder: Node3D, inst: Node3D, meshes: Array, info: Dictionary)
 
 
 func _make_model(key: String):
-	var info: Dictionary = MODELS[key]
+	var info: Dictionary = MODELS[key] if MODELS.has(key) else _extra[key]
 	if not ResourceLoader.exists(info["path"]):
 		return null
 	var scene = load(info["path"])
@@ -368,9 +490,10 @@ func _make_model(key: String):
 	if meshes.is_empty():
 		holder.free()
 		return null
-	var mat := _gun_material(info["tex"])
-	for m in meshes:
-		m.material_override = mat
+	if str(info["tex"]) != "":
+		var mat := _gun_material(info["tex"])
+		for m in meshes:
+			m.material_override = mat
 	if not _fit_cache.has(key):
 		_fit_cache[key] = _compute_fit(holder, inst, meshes, info)
 	var f: Dictionary = _fit_cache[key]
@@ -384,6 +507,8 @@ func _build_gun() -> void:
 	for c in parts_root.get_children():
 		c.queue_free()
 	var mk: String = MODEL_FOR.get(WeaponDB.W[wid]["n"], "")
+	if mk == "":
+		mk = guns_key(WeaponDB.W[wid])
 	if mk != "":
 		var mdl = _make_model(mk)
 		if mdl != null:
@@ -634,12 +759,16 @@ func _physics_process(delta: float) -> void:
 	flash_t -= delta
 	flash_mesh.visible = flash_t > 0.0
 	flash_light.visible = flash_t > 0.0
+	var grounded := is_on_floor()
+	if grounded and was_air:
+		_play(_snd("step"), -3.0, 0.1)
+	was_air = not grounded
 	var moving := move_input.length() > 0.1 and is_on_floor()
 	if moving:
 		walk_t += delta * (9.0 if stance == 0 else 5.0)
 		step_t -= delta
 		if step_t <= 0.0 and stance == 0:
-			step_t = 0.34
+			step_t = 0.26 if sprint else 0.34
 			_play(_snd("step"), -10.0, 0.12)
 	var bob := sin(walk_t) * 0.012 if moving else sin(Time.get_ticks_msec() * 0.002) * 0.004
 	var tilt := 0.0
@@ -724,7 +853,7 @@ func _char_pose(m: Node3D) -> void:
 		var sk: Skeleton3D = skv
 		ch_sk = sk
 		ch_bones = {}
-		var keys := ["leftarm", "leftforearm", "lefthand", "rightarm", "rightforearm", "righthand", "leftupleg", "leftleg", "leftfoot", "rightupleg", "rightleg", "rightfoot"]
+		var keys := ["leftarm", "leftforearm", "lefthand", "rightarm", "rightforearm", "righthand", "leftupleg", "leftleg", "leftfoot", "rightupleg", "rightleg", "rightfoot", "spine1", "head"]
 		for i in range(sk.get_bone_count()):
 			var nm: String = sk.get_bone_name(i).to_lower()
 			for key in keys:
@@ -764,20 +893,38 @@ func _turn_bone(key: String, ang: float) -> void:
 	_set_abs(i, Basis(Vector3.RIGHT, ang) * ch_sk.get_bone_global_rest(i).basis)
 
 
-func _char_anim() -> void:
+func lobby_pose() -> void:
+	gun_root.position = Vector3(0.22, 0.0, -0.15)
+	gun_root.rotation.x = 0.0
+	_char_anim(true)
+
+
+func _char_anim(force_ground: bool = false) -> void:
 	if ch_sk == null:
 		return
-	# qoʻllar: qurolni ushlab turish
-	_point_bone("leftarm", "leftforearm", Vector3(-0.25, -0.6, 0.55))
-	_point_bone("leftforearm", "lefthand", Vector3(-0.30, 0.10, 0.95))
-	_point_bone("rightarm", "rightforearm", Vector3(0.25, -0.6, 0.55))
-	_point_bone("rightforearm", "righthand", Vector3(0.40, 0.15, 0.90))
-	# oyoqlar: yurish, sakrash
-	var air := not is_on_floor()
+	var spd := Vector2(velocity.x, velocity.z).length()
+	var run := clampf(spd / 5.0, 0.0, 1.0)
+	var spr := 1.0 if (sprint and spd > 2.0) else 0.0
+	sprint_blend = lerpf(sprint_blend, spr, 0.15)
+	var breathe := sin(Time.get_ticks_msec() * 0.0022) * 0.015
+	var lean := run * 0.07 + sprint_blend * 0.14 + kick * 0.04 - pitch * 0.2 + breathe
+	_turn_bone("spine1", lean)
+	_turn_bone("head", -pitch * 0.55 - lean * 0.6)
+	var rlp := 0.0
+	if rl > 0.0:
+		rlp = sin(clampf(1.0 - rl / float(WeaponDB.W[wid]["rl"]), 0.0, 1.0) * PI)
+	var armsw := sin(anim_t) * run * 0.08
+	var rec := kick * 0.35
+	var low := sprint_blend * 0.35
+	_point_bone("leftarm", "leftforearm", Vector3(-0.25 + 0.2 * rlp, -0.6 - 0.25 * rlp - low, 0.55 - 0.2 * rlp - rec + armsw))
+	_point_bone("leftforearm", "lefthand", Vector3(-0.30 + 0.55 * rlp, 0.10 - 0.55 * rlp, 0.95 - 0.5 * rlp - rec))
+	_point_bone("rightarm", "rightforearm", Vector3(0.25, -0.6 - low, 0.55 - rec - armsw))
+	_point_bone("rightforearm", "righthand", Vector3(0.40, 0.15, 0.90 - rec))
+	var air := (not is_on_floor()) and not force_ground
 	for side in ["left", "right"]:
 		var sw: float = leg_l.rotation.x if side == "left" else leg_r.rotation.x
 		var th := -sw
-		var bend := maxf(0.0, -sw) * 1.4
+		var bend := maxf(0.0, -sw) * (1.4 + sprint_blend * 0.6)
 		if air:
 			th -= 0.35
 			bend += 0.6

@@ -50,7 +50,7 @@ var hitm_head := false
 var feed: Array = []
 var sfx2d: AudioStreamPlayer
 var layout := {}
-const CFG_KEYS := ["sens", "vol", "assist", "autofire", "name", "tag", "quality", "fps", "showfps", "minimap", "diff"]
+const CFG_KEYS := ["sens", "vol", "assist", "autofire", "name", "tag", "quality", "fps", "showfps", "minimap", "diff", "kills", "wins", "games", "fav", "autopick", "music"]
 const FPS_OPTS := [30, 45, 60, 90, 120]
 const MAP_CRATES := [
 	[Vector3(-6, 0.75, 6), Vector3(3, 1.5, 3)],
@@ -70,12 +70,34 @@ const GUN_ICONS := {
 	"lmg": [[0.00, 0.38, 0.38, 0.46], [0.26, 0.28, 0.80, 0.56], [0.78, 0.34, 0.98, 0.58], [0.40, 0.56, 0.62, 0.90], [0.66, 0.56, 0.74, 0.78]],
 	"pistol": [[0.20, 0.32, 0.80, 0.50], [0.30, 0.50, 0.50, 0.88], [0.52, 0.50, 0.62, 0.64]],
 }
-var cfg := {"sens": 1.0, "vol": 1.0, "assist": 1.0, "autofire": true, "name": "Player", "tag": "", "quality": 1, "fps": 2, "showfps": false, "minimap": true, "diff": 1}
+var cfg := {"sens": 1.0, "vol": 1.0, "assist": 1.0, "autofire": true, "name": "Player", "tag": "", "quality": 1, "fps": 2, "showfps": false, "minimap": true, "diff": 1, "kills": 0, "wins": 0, "games": 0, "fav": 0, "autopick": false, "music": true}
 var sun: DirectionalLight3D
 var chars: Array = []
 var sel_char := 0
 var char_btn: Button
 var drag_t := 0.0
+var music_p: AudioStreamPlayer
+var lobby: Control
+var stage: Node3D
+var sc_f = null
+var sc_t := 0.0
+var ui_k := 1.0
+var sel_mode := 1
+var lobby_btn: Button
+var lb_name: Label
+var lb_lvl: Label
+var lb_xp: ColorRect
+var lb_char: Label
+var lb_result: Label
+var char_panel: Panel
+var char_list: VBoxContainer
+var arsenal_panel: Panel
+var ars_sel := 0
+var ars_name: Label
+var ars_icon: Control
+var ars_bars: Array = []
+var mode_b: Array = []
+var diff_b: Array = []
 var hit_src = null
 var hit_t := 0.0
 var settings_panel: PanelContainer
@@ -91,9 +113,13 @@ func _ready() -> void:
 	DisplayServer.screen_set_orientation(DisplayServer.SCREEN_LANDSCAPE)
 	sfx2d = AudioStreamPlayer.new()
 	add_child(sfx2d)
+	music_p = AudioStreamPlayer.new()
+	music_p.volume_db = -17.0
+	add_child(music_p)
 	_load_settings()
 	_build_world()
 	_build_ui()
+	_build_stage()
 	_apply_graphics()
 	_show_menu("ZONA: ULTIMATUM")
 
@@ -103,7 +129,7 @@ func _ld(n: String):
 		var p := "res://freefire/audio/%s%s" % [n, ext]
 		if ResourceLoader.exists(p):
 			return load(p)
-	return null
+	return Fighter.synth(n)
 
 
 # ---------- dunyo ----------
@@ -215,6 +241,12 @@ func _build_ui() -> void:
 	resume_btn.add_theme_font_size_override("font_size", 34)
 	resume_btn.pressed.connect(_resume)
 	vb.add_child(resume_btn)
+	lobby_btn = Button.new()
+	lobby_btn.text = "LOBBIGA"
+	lobby_btn.custom_minimum_size = Vector2(320, 90)
+	lobby_btn.add_theme_font_size_override("font_size", 34)
+	lobby_btn.pressed.connect(_show_menu.bind("ZONA: ULTIMATUM"))
+	vb.add_child(lobby_btn)
 	var sb := Button.new()
 	sb.text = "SOZLAMALAR"
 	sb.custom_minimum_size = Vector2(320, 90)
@@ -247,6 +279,7 @@ func _build_ui() -> void:
 	ui.add_child(pick_panel)
 	_center(pick_panel)
 	pick_panel.visible = false
+	_build_lobby()
 	_build_extra_ui()
 
 
@@ -286,12 +319,18 @@ func _show_menu(title: String) -> void:
 	_scan_chars()
 	_refresh_char_btn()
 	menu_title.text = title
-	menu_panel.visible = true
 	pick_panel.visible = false
 	settings_panel.visible = false
 	edit_panel.visible = false
 	resume_btn.visible = (title == "PAUZA")
+	lobby_btn.visible = (title == "PAUZA")
 	state = S.MENU
+	if title == "PAUZA":
+		menu_panel.visible = true
+		_hide_lobby()
+	else:
+		menu_panel.visible = false
+		_show_lobby(title)
 
 
 func _resume() -> void:
@@ -308,6 +347,7 @@ func _msg(s: String, t: float = 2.0) -> void:
 
 # ---------- match mantiqi ----------
 func _start_match(n: int) -> void:
+	_hide_lobby()
 	mode_n = n
 	round_i = 0
 	score = [0, 0]
@@ -365,6 +405,8 @@ func _begin_round() -> void:
 	else:
 		pick_title.text = "5-raund: oʻz qurolingizni tanlang"
 		pick_panel.visible = true
+	if state == S.PICK and bool(cfg["autopick"]):
+		_on_pick(clampi(int(cfg["fav"]), 0, WeaponDB.W.size() - 1))
 
 
 func _on_pick(i: int) -> void:
@@ -436,6 +478,8 @@ func _on_hit(attacker, target, dmg: int, head: bool) -> void:
 			hit_src = attacker
 			hit_t = 1.0
 	if target.hp <= 0:
+		if attacker == player:
+			cfg["kills"] = int(cfg["kills"]) + 1
 		feed.append({"t": 4.0, "s": "%s  >  %s%s" % [_name_of(attacker), _name_of(target), "  [HEADSHOT]" if head else ""]})
 		if feed.size() > 4:
 			feed.pop_front()
@@ -633,6 +677,8 @@ func _set_cfg(key: String, v) -> void:
 	cfg[key] = v
 	if key == "vol":
 		_apply_volume()
+	if key == "music" and not bool(v) and music_p != null:
+		music_p.stop()
 	if key == "quality" or key == "fps":
 		_apply_graphics()
 
@@ -654,8 +700,16 @@ func _mini_btn(txt: String, cb: Callable, w: float = 150.0) -> Button:
 	b.text = txt
 	b.custom_minimum_size = Vector2(w, 70)
 	b.add_theme_font_size_override("font_size", 24)
+	b.pressed.connect(_ui_click)
 	b.pressed.connect(cb)
 	return b
+
+
+func _ui_click() -> void:
+	sfx2d.stream = _ld("ui")
+	sfx2d.volume_db = -8.0
+	if sfx2d.stream != null:
+		sfx2d.play()
 
 
 func _section(t: String) -> Label:
@@ -740,6 +794,7 @@ func _build_extra_ui() -> void:
 	_check_row(sv, "FPS koʻrsatish", "showfps")
 	sv.add_child(_section("OVOZ VA BOTLAR"))
 	_slider_row(sv, "Umumiy ovoz", 0.0, 1.0, 0.05, "vol")
+	_check_row(sv, "Lobbi musiqasi", "music")
 	_choice_row(sv, "Bot qiyinligi", "diff", ["Oson", "Oʻrta", "Qiyin"])
 	sv.add_child(_mini_btn("SAQLASH VA ORQAGA", _close_settings, 560.0))
 	sc.add_child(sv)
@@ -769,6 +824,7 @@ func _build_extra_ui() -> void:
 
 func _open_settings() -> void:
 	menu_panel.visible = false
+	lobby.visible = false
 	settings_panel.visible = true
 
 
@@ -1006,6 +1062,10 @@ func _process(delta: float) -> void:
 	lbl_msg.position = Vector2(0, vs.y * 0.22)
 	lbl_w.position = Vector2(20, vs.y - 60)
 	lbl_hp.position = Vector2(20, vs.y - 110)
+	if stage != null and stage.visible and sc_f != null and is_instance_valid(sc_f):
+		sc_t += delta
+		sc_f.rotation.y = PI + sin(sc_t * 0.6) * 0.5
+		sc_f.lobby_pose()
 	if state == S.LIVE:
 		_player_input(delta)
 		for f in fighters:
@@ -1018,6 +1078,7 @@ func _process(delta: float) -> void:
 		end_t -= delta
 		if end_t <= 0.0:
 			if score[0] >= 3 or score[1] >= 3:
+				_record_result(score[0] >= 3)
 				_show_menu("GʻALABA!" if score[0] >= 3 else "Magʻlubiyat")
 				lbl_msg.text = ""
 			else:
@@ -1159,14 +1220,15 @@ func _draw_squad(k: float, y0: float) -> float:
 	return y
 
 
-func _gun_icon(kind: String, r: Rect2, col: Color) -> void:
+func _gun_icon(kind: String, r: Rect2, col: Color, cv: CanvasItem = null) -> void:
+	var cnv: CanvasItem = cv if cv != null else hud
 	var parts: Array = GUN_ICONS.get(kind, GUN_ICONS["ar"])
 	for p in parts:
 		var x0 := float(p[0])
 		var y0 := float(p[1])
 		var x1 := float(p[2])
 		var y1 := float(p[3])
-		hud.draw_rect(Rect2(r.position + Vector2(x0 * r.size.x, y0 * r.size.y), Vector2((x1 - x0) * r.size.x, (y1 - y0) * r.size.y)), col)
+		cnv.draw_rect(Rect2(r.position + Vector2(x0 * r.size.x, y0 * r.size.y), Vector2((x1 - x0) * r.size.x, (y1 - y0) * r.size.y)), col)
 
 
 func _draw_weapon_panel(vs: Vector2, k: float) -> void:
@@ -1223,3 +1285,417 @@ func _draw_button(b: Array, on: bool, sel: bool) -> void:
 	_icon(b[3], pos, r, ic)
 
 
+# ---------- LOBBI ----------
+func _sbox(bg: Color, border: Color, bw: int = 2, r: int = 10) -> StyleBoxFlat:
+	var s := StyleBoxFlat.new()
+	s.bg_color = bg
+	s.border_color = border
+	s.set_border_width_all(bw)
+	s.set_corner_radius_all(r)
+	s.content_margin_left = 12.0
+	s.content_margin_right = 12.0
+	s.content_margin_top = 6.0
+	s.content_margin_bottom = 6.0
+	return s
+
+
+func _style_btn(b: Button, gold: bool) -> void:
+	var bg := Color(0.95, 0.70, 0.10, 0.96) if gold else Color(0.08, 0.07, 0.14, 0.85)
+	var bd := Color(1.0, 0.88, 0.35) if gold else Color(0.75, 0.6, 0.2, 0.9)
+	b.add_theme_stylebox_override("normal", _sbox(bg, bd))
+	b.add_theme_stylebox_override("hover", _sbox(bg.lightened(0.1), bd))
+	b.add_theme_stylebox_override("pressed", _sbox(bg.lightened(0.25), bd))
+	b.add_theme_stylebox_override("focus", _sbox(bg, bd))
+	var fc := Color(0.12, 0.07, 0.0) if gold else Color.WHITE
+	for nm in ["font_color", "font_hover_color", "font_pressed_color", "font_focus_color"]:
+		b.add_theme_color_override(nm, fc)
+
+
+func _mkbtn(text: String, sz: int, pos: Vector2, size: Vector2, gold: bool, cb: Callable) -> Button:
+	var b := Button.new()
+	b.text = text
+	b.position = pos
+	b.custom_minimum_size = size
+	b.size = size
+	b.add_theme_font_size_override("font_size", sz)
+	_style_btn(b, gold)
+	b.pressed.connect(cb)
+	return b
+
+
+func _gold_lab(txt: String, sz: int) -> Label:
+	var l := _lab(txt, sz)
+	l.add_theme_color_override("font_color", Color(1.0, 0.82, 0.3))
+	return l
+
+
+func _build_lobby() -> void:
+	var vs := get_viewport().get_visible_rect().size
+	var k := vs.y / 720.0
+	ui_k = k
+	lobby = Control.new()
+	lobby.set_anchors_preset(Control.PRESET_FULL_RECT)
+	lobby.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	ui.add_child(lobby)
+	lobby.visible = false
+	# profil kartasi
+	var pc := Panel.new()
+	pc.position = Vector2(14, 12) * k
+	pc.size = Vector2(340, 84) * k
+	pc.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pc.add_theme_stylebox_override("panel", _sbox(Color(0.05, 0.04, 0.1, 0.82), Color(0.75, 0.6, 0.2, 0.9)))
+	lobby.add_child(pc)
+	lb_name = _lab("", int(24 * k))
+	lb_name.position = Vector2(12, 4) * k
+	pc.add_child(lb_name)
+	lb_lvl = _gold_lab("", int(16 * k))
+	lb_lvl.position = Vector2(12, 38) * k
+	pc.add_child(lb_lvl)
+	var xb := ColorRect.new()
+	xb.color = Color(1, 1, 1, 0.15)
+	xb.position = Vector2(12, 68) * k
+	xb.size = Vector2(316, 8) * k
+	pc.add_child(xb)
+	lb_xp = ColorRect.new()
+	lb_xp.color = Color(1.0, 0.8, 0.25)
+	lb_xp.position = Vector2(12, 68) * k
+	lb_xp.size = Vector2(10, 8) * k
+	pc.add_child(lb_xp)
+	lb_result = _gold_lab("", int(44 * k))
+	lb_result.position = Vector2(vs.x * 0.5 - 300 * k, 14 * k)
+	lb_result.custom_minimum_size = Vector2(600, 0) * k
+	lb_result.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lobby.add_child(lb_result)
+	# chap tugmalar
+	var names := ["PERSONAJ", "QUROLLAR", "SOZLAMALAR"]
+	var cbs := [_lb_char_toggle, _lb_arsenal_toggle, _open_settings]
+	for i in range(3):
+		lobby.add_child(_mkbtn(names[i], int(24 * k), Vector2(14, 112 + i * 66) * k, Vector2(250, 56) * k, false, cbs[i]))
+	# personaj almashtirish
+	var cx := vs.x * 0.40
+	lobby.add_child(_mkbtn("<", int(34 * k), Vector2(cx - 200 * k, vs.y - 128 * k), Vector2(64, 64) * k, false, _lb_prev))
+	lobby.add_child(_mkbtn(">", int(34 * k), Vector2(cx + 136 * k, vs.y - 128 * k), Vector2(64, 64) * k, false, _lb_next))
+	lb_char = _lab("", int(24 * k))
+	lb_char.position = Vector2(cx - 130 * k, vs.y - 118 * k)
+	lb_char.custom_minimum_size = Vector2(260 * k, 0)
+	lb_char.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	lobby.add_child(lb_char)
+	# rejim paneli
+	var mp := Panel.new()
+	mp.position = Vector2(vs.x - 390 * k, vs.y - 268 * k)
+	mp.size = Vector2(370, 150) * k
+	mp.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	mp.add_theme_stylebox_override("panel", _sbox(Color(0.05, 0.04, 0.1, 0.82), Color(0.75, 0.6, 0.2, 0.9)))
+	lobby.add_child(mp)
+	var mt := _gold_lab("REJIM  (5 raund, 3 gʻalaba)", int(18 * k))
+	mt.position = Vector2(12, 6) * k
+	mp.add_child(mt)
+	mode_b = []
+	for i in range(2):
+		var mb := _mkbtn("%d VA %d" % [i + 1, i + 1], int(24 * k), Vector2(12 + i * 178, 36) * k, Vector2(168, 46) * k, false, _lb_mode.bind(i + 1))
+		mp.add_child(mb)
+		mode_b.append(mb)
+	var dt := _lab("Bot qiyinligi", int(16 * k))
+	dt.position = Vector2(12, 88) * k
+	mp.add_child(dt)
+	diff_b = []
+	var dn := ["Oson", "Oʻrta", "Qiyin"]
+	for i in range(3):
+		var db := _mkbtn(dn[i], int(18 * k), Vector2(12 + i * 118, 108) * k, Vector2(110, 36) * k, false, _lb_diff.bind(i))
+		mp.add_child(db)
+		diff_b.append(db)
+	lobby.add_child(_mkbtn("BOSHLASH", int(46 * k), Vector2(vs.x - 390 * k, vs.y - 108 * k), Vector2(370, 96) * k, true, _lb_start))
+	# personaj roʻyxati
+	char_panel = Panel.new()
+	char_panel.position = Vector2(vs.x - 390 * k, 104 * k)
+	char_panel.size = Vector2(370, 330) * k
+	char_panel.add_theme_stylebox_override("panel", _sbox(Color(0.05, 0.04, 0.1, 0.92), Color(0.75, 0.6, 0.2, 0.9)))
+	lobby.add_child(char_panel)
+	var csc := ScrollContainer.new()
+	csc.position = Vector2(8, 8) * k
+	csc.size = Vector2(354, 314) * k
+	csc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	char_panel.add_child(csc)
+	char_list = VBoxContainer.new()
+	char_list.custom_minimum_size = Vector2(340, 0) * k
+	char_list.add_theme_constant_override("separation", 8)
+	csc.add_child(char_list)
+	char_panel.visible = false
+	# qurollar oynasi
+	arsenal_panel = Panel.new()
+	arsenal_panel.position = Vector2(vs.x * 0.5 - 380 * k, 50 * k)
+	arsenal_panel.size = Vector2(760, 620) * k
+	arsenal_panel.add_theme_stylebox_override("panel", _sbox(Color(0.04, 0.03, 0.09, 0.96), Color(0.75, 0.6, 0.2, 0.95), 3, 14))
+	lobby.add_child(arsenal_panel)
+	var at := _gold_lab("QUROLLAR", int(30 * k))
+	at.position = Vector2(20, 10) * k
+	arsenal_panel.add_child(at)
+	var asc := ScrollContainer.new()
+	asc.position = Vector2(16, 56) * k
+	asc.size = Vector2(728, 270) * k
+	asc.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	arsenal_panel.add_child(asc)
+	var ag := GridContainer.new()
+	ag.columns = 5
+	ag.add_theme_constant_override("h_separation", 6)
+	ag.add_theme_constant_override("v_separation", 6)
+	asc.add_child(ag)
+	for i in range(WeaponDB.W.size()):
+		var wb := Button.new()
+		wb.text = str(WeaponDB.W[i]["n"])
+		wb.custom_minimum_size = Vector2(138, 54) * k
+		wb.add_theme_font_size_override("font_size", int(17 * k))
+		_style_btn(wb, false)
+		wb.pressed.connect(_ars_select.bind(i))
+		ag.add_child(wb)
+	ars_icon = Control.new()
+	ars_icon.position = Vector2(20, 340) * k
+	ars_icon.size = Vector2(270, 120) * k
+	ars_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	ars_icon.draw.connect(_draw_ars_icon)
+	arsenal_panel.add_child(ars_icon)
+	ars_name = _gold_lab("", int(24 * k))
+	ars_name.position = Vector2(310, 334) * k
+	arsenal_panel.add_child(ars_name)
+	ars_bars = []
+	var bn := ["Zarar", "Tezlik", "Zaryad"]
+	for i in range(3):
+		var bl := _lab(bn[i], int(18 * k))
+		bl.position = Vector2(310, 380 + i * 34) * k
+		arsenal_panel.add_child(bl)
+		var pb := ProgressBar.new()
+		pb.position = Vector2(430, 384 + i * 34) * k
+		pb.size = Vector2(300, 20) * k
+		pb.show_percentage = false
+		pb.max_value = 100.0
+		arsenal_panel.add_child(pb)
+		ars_bars.append(pb)
+	var ck := CheckButton.new()
+	ck.text = "Har raund shu qurol bilan (so'ramasdan)"
+	ck.position = Vector2(20, 484) * k
+	ck.add_theme_font_size_override("font_size", int(20 * k))
+	ck.button_pressed = bool(cfg["autopick"])
+	ck.toggled.connect(func(on: bool): _set_cfg("autopick", on))
+	arsenal_panel.add_child(ck)
+	arsenal_panel.add_child(_mkbtn("TANLASH", int(26 * k), Vector2(20, 540) * k, Vector2(350, 60) * k, true, _ars_confirm))
+	arsenal_panel.add_child(_mkbtn("YOPISH", int(26 * k), Vector2(390, 540) * k, Vector2(350, 60) * k, false, _lb_arsenal_toggle))
+	arsenal_panel.visible = false
+
+
+func _draw_ars_icon() -> void:
+	var kind := str(WeaponDB.W[ars_sel]["s"])
+	_gun_icon(kind, Rect2(Vector2.ZERO, ars_icon.size), Color(1, 1, 1, 0.95), ars_icon)
+
+
+func _ars_select(i: int) -> void:
+	ars_sel = i
+	var w: Dictionary = WeaponDB.W[i]
+	ars_name.text = "%s  (%s)" % [w["n"], str(w["s"]).to_upper()]
+	ars_bars[0].value = minf(float(w["dmg"]) * float(w["pel"]), 100.0)
+	ars_bars[1].value = minf(1.0 / float(w["rate"]) / 15.0 * 100.0, 100.0)
+	ars_bars[2].value = minf(float(w["mag"]) / 50.0 * 100.0, 100.0)
+	ars_icon.queue_redraw()
+
+
+func _ars_confirm() -> void:
+	cfg["fav"] = ars_sel
+	_save_settings()
+	arsenal_panel.visible = false
+	_refresh_showcase()
+
+
+func _lb_arsenal_toggle() -> void:
+	arsenal_panel.visible = not arsenal_panel.visible
+	char_panel.visible = false
+	if arsenal_panel.visible:
+		_ars_select(clampi(int(cfg["fav"]), 0, WeaponDB.W.size() - 1))
+
+
+func _lb_char_toggle() -> void:
+	char_panel.visible = not char_panel.visible
+	arsenal_panel.visible = false
+
+
+func _fill_char_panel() -> void:
+	for c in char_list.get_children():
+		c.queue_free()
+	if chars.is_empty():
+		var l := _lab("Personaj fayllari topilmadi", int(20 * ui_k))
+		char_list.add_child(l)
+		return
+	for i in range(chars.size()):
+		var b := Button.new()
+		b.text = str(chars[i]).get_basename()
+		b.custom_minimum_size = Vector2(330, 60) * ui_k
+		b.add_theme_font_size_override("font_size", int(22 * ui_k))
+		_style_btn(b, i == sel_char)
+		b.pressed.connect(_lb_pick_char.bind(i))
+		char_list.add_child(b)
+
+
+func _lb_pick_char(i: int) -> void:
+	sel_char = i
+	char_panel.visible = false
+	_refresh_lobby()
+	_refresh_showcase()
+
+
+func _lb_step(d: int) -> void:
+	if chars.is_empty():
+		return
+	sel_char = (sel_char + d + chars.size()) % chars.size()
+	_refresh_lobby()
+	_refresh_showcase()
+
+
+func _lb_prev() -> void:
+	_lb_step(-1)
+
+
+func _lb_next() -> void:
+	_lb_step(1)
+
+
+func _lb_mode(n: int) -> void:
+	sel_mode = n
+	_refresh_lobby()
+
+
+func _lb_diff(d: int) -> void:
+	_set_cfg("diff", d)
+	_save_settings()
+	_refresh_lobby()
+
+
+func _lb_start() -> void:
+	_save_settings()
+	_start_match(sel_mode)
+
+
+func _refresh_lobby() -> void:
+	var xp := int(cfg["kills"]) * 10 + int(cfg["wins"]) * 50 + int(cfg["games"]) * 5
+	lb_name.text = _my_name()
+	lb_lvl.text = "DARAJA %d   KILL %d   GʻALABA %d" % [1 + xp / 100, int(cfg["kills"]), int(cfg["wins"])]
+	lb_xp.size.x = maxf(316.0 * ui_k * float(xp % 100) / 100.0, 6.0)
+	lb_char.text = "Standart" if chars.is_empty() else str(chars[sel_char]).get_basename()
+	for i in range(mode_b.size()):
+		_style_btn(mode_b[i], sel_mode == i + 1)
+	for i in range(diff_b.size()):
+		_style_btn(diff_b[i], int(cfg["diff"]) == i)
+
+
+func _record_result(win: bool) -> void:
+	cfg["games"] = int(cfg["games"]) + 1
+	if win:
+		cfg["wins"] = int(cfg["wins"]) + 1
+	_save_settings()
+
+
+func _build_stage() -> void:
+	stage = Node3D.new()
+	stage.position = Vector3(0, 0, -90)
+	add_child(stage)
+	var bg := MeshInstance3D.new()
+	var sph := SphereMesh.new()
+	sph.radius = 40.0
+	sph.height = 80.0
+	bg.mesh = sph
+	var sh := Shader.new()
+	sh.code = "shader_type spatial;\nrender_mode unshaded, cull_front;\nvarying float vy;\nvoid vertex() { vy = VERTEX.y; }\nvoid fragment() {\n\tfloat t = clamp(vy / 40.0 * 0.5 + 0.5, 0.0, 1.0);\n\tvec3 low = vec3(0.55, 0.22, 0.85);\n\tvec3 high = vec3(0.07, 0.03, 0.20);\n\tALBEDO = mix(low, high, pow(t, 0.7));\n}\n"
+	var sm := ShaderMaterial.new()
+	sm.shader = sh
+	bg.material_override = sm
+	stage.add_child(bg)
+	var fl := MeshInstance3D.new()
+	var cyl := CylinderMesh.new()
+	cyl.top_radius = 2.2
+	cyl.bottom_radius = 2.4
+	cyl.height = 0.16
+	fl.mesh = cyl
+	fl.position = Vector3(0, -0.08, 0)
+	var fm := StandardMaterial3D.new()
+	fm.albedo_color = Color(0.10, 0.08, 0.18)
+	fm.metallic = 0.6
+	fm.roughness = 0.35
+	fl.material_override = fm
+	stage.add_child(fl)
+	var ring := MeshInstance3D.new()
+	var rc := CylinderMesh.new()
+	rc.top_radius = 2.45
+	rc.bottom_radius = 2.45
+	rc.height = 0.05
+	ring.mesh = rc
+	ring.position = Vector3(0, -0.12, 0)
+	var rm := StandardMaterial3D.new()
+	rm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	rm.albedo_color = Color(1.0, 0.8, 0.25)
+	ring.material_override = rm
+	stage.add_child(ring)
+	var l1 := OmniLight3D.new()
+	l1.position = Vector3(-2.5, 2.6, 2.0)
+	l1.light_color = Color(1.0, 0.35, 0.9)
+	l1.light_energy = 2.2
+	l1.omni_range = 12.0
+	stage.add_child(l1)
+	var l2 := OmniLight3D.new()
+	l2.position = Vector3(3.0, 2.2, 1.5)
+	l2.light_color = Color(0.3, 0.8, 1.0)
+	l2.light_energy = 2.0
+	l2.omni_range = 12.0
+	stage.add_child(l2)
+	var l3 := OmniLight3D.new()
+	l3.position = Vector3(0.5, 2.5, 4.0)
+	l3.light_color = Color(1.0, 0.95, 0.9)
+	l3.light_energy = 1.6
+	l3.omni_range = 12.0
+	stage.add_child(l3)
+	stage.visible = false
+
+
+func _refresh_showcase() -> void:
+	if sc_f != null and is_instance_valid(sc_f):
+		sc_f.queue_free()
+	sc_f = Fighter.new()
+	sc_f.setup(0, false)
+	stage.add_child(sc_f)
+	sc_f.set_physics_process(false)
+	sc_f.set_process(false)
+	sc_f.collision_layer = 0
+	sc_f.collision_mask = 0
+	sc_f.reset(stage.global_position + Vector3(0, 0.05, 0), 0.0)
+	sc_f.give(clampi(int(cfg["fav"]), 0, WeaponDB.W.size() - 1))
+	sc_f._build_gun()
+	if not chars.is_empty():
+		sc_f.set_character("res://freefire/models/" + str(chars[sel_char]))
+	sc_f.rotation.y = PI
+
+
+func _show_lobby(title: String) -> void:
+	lobby.visible = true
+	lb_result.text = "" if title == "ZONA: ULTIMATUM" else title
+	char_panel.visible = false
+	arsenal_panel.visible = false
+	_fill_char_panel()
+	_refresh_lobby()
+	stage.visible = true
+	cam.fov = 40.0
+	cam.global_position = stage.global_position + Vector3(0.4, 1.3, 3.5)
+	cam.look_at(stage.global_position + Vector3(0.4, 1.0, 0.0))
+	_refresh_showcase()
+	if bool(cfg["music"]) and music_p != null and not music_p.playing:
+		if music_p.stream == null:
+			music_p.stream = Fighter.synth("music")
+		if music_p.stream != null:
+			music_p.play()
+
+
+func _hide_lobby() -> void:
+	if music_p != null:
+		music_p.stop()
+	if lobby != null:
+		lobby.visible = false
+	if stage != null:
+		stage.visible = false
+	if sc_f != null and is_instance_valid(sc_f):
+		sc_f.queue_free()
+	sc_f = null
