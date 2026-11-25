@@ -76,6 +76,19 @@ var chars: Array = []
 var sel_char := 0
 var char_btn: Button
 var drag_t := 0.0
+var arena_root: Node3D
+var city_root: Node3D = null
+var city_script = null
+var city_map = null
+var big_map := false
+var sel_map := 0
+var map_b: Array = []
+var map_half := 24.0
+var zone_r := 160.0
+var zone_tick := 0.0
+var round_len := 60.0
+var mm_tex: ImageTexture = null
+var bot_st := {}
 var music_p: AudioStreamPlayer
 var lobby: Control
 var stage: Node3D
@@ -151,10 +164,12 @@ func _box(pos: Vector3, size: Vector3, col: Color) -> void:
 	c.shape = s
 	b.add_child(c)
 	b.position = pos
-	add_child(b)
+	arena_root.add_child(b)
 
 
 func _build_world() -> void:
+	arena_root = Node3D.new()
+	add_child(arena_root)
 	_box(Vector3(0, -0.5, 0), Vector3(44, 1, 44), Color(0.55, 0.55, 0.5))
 	var wc := Color(0.4, 0.45, 0.4)
 	_box(Vector3(0, 2, -22), Vector3(44, 4, 1), wc)
@@ -346,8 +361,84 @@ func _msg(s: String, t: float = 2.0) -> void:
 
 
 # ---------- match mantiqi ----------
+func _make_minimap_tex(mp) -> void:
+	var img := Image.create(256, 256, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0.06, 0.08, 0.06, 0.9))
+	var sc := 256.0 / 330.0
+	var skip := ["tt", "tc", "tC", "tn", "x", "s", "G", "d", "g", "r", "T", "p", "F"]
+	for t in mp.DATA:
+		if skip.has(str(t)):
+			continue
+		var arr: PackedFloat32Array = mp.DATA[t]
+		var n := int(arr.size() / 7)
+		for i in range(n):
+			var o := i * 7
+			if arr[o + 4] < 2.5 or arr[o + 3] > 70.0 or arr[o + 5] > 70.0:
+				continue
+			var px := int((arr[o] - arr[o + 3] * 0.5 + 165.0) * sc)
+			var pz := int((arr[o + 2] - arr[o + 5] * 0.5 + 165.0) * sc)
+			var pw := maxi(1, int(arr[o + 3] * sc))
+			var ph := maxi(1, int(arr[o + 5] * sc))
+			img.fill_rect(Rect2i(px, pz, pw, ph), Color(0.62, 0.62, 0.66, 0.95))
+	mm_tex = ImageTexture.create_from_image(img)
+
+
+func _set_map(big: bool) -> void:
+	if big and city_root == null:
+		var sc = load("res://freefire/zona_map.gd")
+		if sc != null and sc.can_instantiate():
+			city_script = sc
+			city_map = sc.new()
+			city_root = Node3D.new()
+			city_map.build(city_root)
+			_make_minimap_tex(city_map)
+		else:
+			big = false
+	big_map = big
+	map_half = 165.0 if big else 24.0
+	if big:
+		if arena_root.get_parent() != null:
+			remove_child(arena_root)
+		if city_root.get_parent() == null:
+			add_child(city_root)
+	else:
+		if city_root != null and city_root.get_parent() != null:
+			remove_child(city_root)
+		if arena_root.get_parent() == null:
+			add_child(arena_root)
+	_apply_graphics()
+
+
+func _zone_radius(elapsed: float) -> float:
+	var rr: Array = city_script.ZONE_RADII
+	var stg := int(elapsed / 28.0)
+	if stg >= rr.size() - 1:
+		return float(rr[rr.size() - 1])
+	var tt := elapsed - float(stg) * 28.0
+	if tt < 14.0:
+		return float(rr[stg])
+	return lerpf(float(rr[stg]), float(rr[stg + 1]), (tt - 14.0) / 14.0)
+
+
+func _zone_update(delta: float) -> void:
+	zone_r = _zone_radius(round_len - round_t)
+	zone_tick += delta
+	if zone_tick < 0.5:
+		return
+	zone_tick = 0.0
+	for f in fighters:
+		if f.alive and Vector2(f.global_position.x, f.global_position.z).length() > zone_r:
+			f.hurt(3, null, false)
+
+
 func _start_match(n: int) -> void:
 	_hide_lobby()
+	if sel_map == 1 and city_root == null:
+		lbl_msg.text = "Xarita yuklanmoqda..."
+		await get_tree().process_frame
+		await get_tree().process_frame
+		lbl_msg.text = ""
+	_set_map(sel_map == 1)
 	mode_n = n
 	round_i = 0
 	score = [0, 0]
@@ -381,7 +472,10 @@ func _begin_round() -> void:
 	stick_id = -1
 	look_id = -1
 	stick_vec = Vector2.ZERO
-	round_t = 60.0
+	round_t = 180.0 if big_map else 60.0
+	round_len = round_t
+	zone_r = 160.0
+	zone_tick = 0.0
 	zoomed = false
 	cam.fov = 75.0
 	feed.clear()
@@ -391,7 +485,12 @@ func _begin_round() -> void:
 			if f.team != t:
 				continue
 			var x := (idx - (mode_n - 1) * 0.5) * 4.0
-			f.reset(Vector3(x, 0.1, 16.0 if t == 0 else -16.0), 0.0 if t == 0 else PI)
+			if big_map:
+				var sp: Array = city_script.SPAWN_B if t == 0 else city_script.SPAWN_A
+				var spv: Vector3 = sp[idx % sp.size()]
+				f.reset(spv + Vector3(0, 0.1, 0), 0.0 if t == 0 else PI)
+			else:
+				f.reset(Vector3(x, 0.1, 16.0 if t == 0 else -16.0), 0.0 if t == 0 else PI)
 			idx += 1
 	state = S.PICK
 	if round_i < 2:
@@ -449,11 +548,15 @@ func _check_round(delta: float) -> void:
 		_end_round(1 if a[0] == 0 else 0)
 		return
 	round_t -= delta
+	if big_map:
+		_zone_update(delta)
 	if round_t <= 0.0:
 		_end_round(0 if hpsum[0] >= hpsum[1] else 1)
 
 
 func _name_of(f) -> String:
+	if f == null:
+		return "Zona"
 	if f == player:
 		return _my_name()
 	if f.team == player.team:
@@ -519,11 +622,29 @@ func _think(b, delta: float) -> void:
 			b.want_jump = true
 	var fw := -1.0 if dist > 12.0 else (1.0 if dist < 5.0 else 0.0)
 	b.move_input = Vector2(b.ai_strafe * 0.7, fw)
+	if big_map:
+		b.sprint = dist > 35.0
+		var id := b.get_instance_id()
+		var st: Dictionary = bot_st.get(id, {"t": 0.0, "side": 1.0, "until": 0.0})
+		var spd := Vector2(b.velocity.x, b.velocity.z).length()
+		if b.move_input.length() > 0.3 and spd < 0.6:
+			st["t"] = float(st["t"]) + delta
+		else:
+			st["t"] = maxf(float(st["t"]) - delta, 0.0)
+		if float(st["t"]) > 0.5:
+			st["until"] = 1.4
+			st["side"] = [-1.0, 1.0][randi() % 2]
+			st["t"] = 0.0
+			b.want_jump = true
+		if float(st["until"]) > 0.0:
+			st["until"] = float(st["until"]) - delta
+			b.move_input = Vector2(float(st["side"]), -0.4)
+		bot_st[id] = st
 	var aim_pt: Vector3 = t.aim_point(b.ai_head)
 	b.use_origin = false
 	var jit: float = [0.06, 0.03, 0.012][clampi(int(cfg["diff"]), 0, 2)]
 	b.aim_dir = ((aim_pt - b.eye()).normalized() + Vector3(randf_range(-jit, jit), randf_range(-jit, jit), randf_range(-jit, jit))).normalized()
-	b.want_fire = dist < 45.0 and facing.dot(flat.normalized()) > 0.9
+	b.want_fire = dist < (75.0 if big_map else 45.0) and facing.dot(flat.normalized()) > 0.9
 
 
 # ---------- oyinchi ----------
@@ -765,7 +886,7 @@ func _apply_graphics() -> void:
 	if sun != null:
 		sun.shadow_enabled = q >= 1
 	if cam != null:
-		cam.far = [50.0, 80.0, 140.0][q]
+		cam.far = ([150.0, 260.0, 420.0][q] if big_map else [50.0, 80.0, 140.0][q])
 
 
 func _build_extra_ui() -> void:
@@ -1077,16 +1198,20 @@ func _process(delta: float) -> void:
 	elif state == S.END:
 		end_t -= delta
 		if end_t <= 0.0:
-			if score[0] >= 3 or score[1] >= 3:
-				_record_result(score[0] >= 3)
-				_show_menu("GʻALABA!" if score[0] >= 3 else "Magʻlubiyat")
+			var win_to := 2 if big_map else 3
+			if score[0] >= win_to or score[1] >= win_to:
+				_record_result(score[0] >= win_to)
+				_show_menu("GʻALABA!" if score[0] >= win_to else "Magʻlubiyat")
 				lbl_msg.text = ""
 			else:
 				round_i += 1
 				_begin_round()
 	if player != null and state != S.MENU:
 		_update_cam()
-		lbl_top.text = "Raund %d/5     %d : %d     %d s" % [mini(round_i + 1, 5), score[0], score[1], int(ceil(maxf(round_t, 0.0)))]
+		var tot := 3 if big_map else 5
+		lbl_top.text = "Raund %d/%d     %d : %d     %d s" % [mini(round_i + 1, tot), tot, score[0], score[1], int(ceil(maxf(round_t, 0.0)))]
+		if big_map:
+			lbl_top.text += "     Zona %d m" % int(zone_r)
 		lbl_w.text = ""
 		lbl_hp.text = ""
 	else:
@@ -1168,18 +1293,24 @@ func _draw_hit_dir(c: Vector2, k: float) -> void:
 
 
 func _w2m(x: float, z: float, o: Vector2, s: float) -> Vector2:
-	return o + Vector2((x + 24.0) / 48.0 * s, (z + 24.0) / 48.0 * s)
+	return o + Vector2((x + map_half) / (map_half * 2.0) * s, (z + map_half) / (map_half * 2.0) * s)
 
 
 func _draw_minimap(k: float) -> void:
 	var s := 190.0 * k
 	var o := Vector2(14.0 * k, 14.0 * k)
 	hud.draw_rect(Rect2(o, Vector2(s, s)), Color(0.04, 0.05, 0.07, 0.62))
-	for cr in MAP_CRATES:
-		var p: Vector3 = cr[0]
-		var sz: Vector3 = cr[1]
-		var a := _w2m(p.x - sz.x * 0.5, p.z - sz.z * 0.5, o, s)
-		hud.draw_rect(Rect2(a, Vector2(sz.x, sz.z) / 48.0 * s), Color(0.55, 0.5, 0.42, 0.9))
+	if big_map:
+		if mm_tex != null:
+			hud.draw_texture_rect(mm_tex, Rect2(o, Vector2(s, s)), false)
+		var zc := _w2m(0.0, 0.0, o, s)
+		hud.draw_arc(zc, zone_r / (map_half * 2.0) * s, 0.0, TAU, 48, Color(1.0, 0.25, 0.2, 0.9), 2.0)
+	else:
+		for cr in MAP_CRATES:
+			var p: Vector3 = cr[0]
+			var sz: Vector3 = cr[1]
+			var a := _w2m(p.x - sz.x * 0.5, p.z - sz.z * 0.5, o, s)
+			hud.draw_rect(Rect2(a, Vector2(sz.x, sz.z) / 48.0 * s), Color(0.55, 0.5, 0.42, 0.9))
 	hud.draw_rect(Rect2(o, Vector2(s, s)), Color(1, 1, 1, 0.55), false, 2.0)
 	for f in fighters:
 		if f == player or not f.alive:
@@ -1382,8 +1513,8 @@ func _build_lobby() -> void:
 	lobby.add_child(lb_char)
 	# rejim paneli
 	var mp := Panel.new()
-	mp.position = Vector2(vs.x - 390 * k, vs.y - 268 * k)
-	mp.size = Vector2(370, 150) * k
+	mp.position = Vector2(vs.x - 390 * k, vs.y - 322 * k)
+	mp.size = Vector2(370, 204) * k
 	mp.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	mp.add_theme_stylebox_override("panel", _sbox(Color(0.05, 0.04, 0.1, 0.82), Color(0.75, 0.6, 0.2, 0.9)))
 	lobby.add_child(mp)
@@ -1395,13 +1526,19 @@ func _build_lobby() -> void:
 		var mb := _mkbtn("%d VA %d" % [i + 1, i + 1], int(24 * k), Vector2(12 + i * 178, 36) * k, Vector2(168, 46) * k, false, _lb_mode.bind(i + 1))
 		mp.add_child(mb)
 		mode_b.append(mb)
+	map_b = []
+	var mn2 := ["ARENA", "KATTA ZONA"]
+	for i in range(2):
+		var xb2 := _mkbtn(mn2[i], int(20 * k), Vector2(12 + i * 178, 84) * k, Vector2(168, 42) * k, false, _lb_map.bind(i))
+		mp.add_child(xb2)
+		map_b.append(xb2)
 	var dt := _lab("Bot qiyinligi", int(16 * k))
-	dt.position = Vector2(12, 88) * k
+	dt.position = Vector2(12, 132) * k
 	mp.add_child(dt)
 	diff_b = []
 	var dn := ["Oson", "Oʻrta", "Qiyin"]
 	for i in range(3):
-		var db := _mkbtn(dn[i], int(18 * k), Vector2(12 + i * 118, 108) * k, Vector2(110, 36) * k, false, _lb_diff.bind(i))
+		var db := _mkbtn(dn[i], int(18 * k), Vector2(12 + i * 118, 156) * k, Vector2(110, 38) * k, false, _lb_diff.bind(i))
 		mp.add_child(db)
 		diff_b.append(db)
 	lobby.add_child(_mkbtn("BOSHLASH", int(46 * k), Vector2(vs.x - 390 * k, vs.y - 108 * k), Vector2(370, 96) * k, true, _lb_start))
@@ -1556,6 +1693,11 @@ func _lb_next() -> void:
 	_lb_step(1)
 
 
+func _lb_map(i: int) -> void:
+	sel_map = i
+	_refresh_lobby()
+
+
 func _lb_mode(n: int) -> void:
 	sel_mode = n
 	_refresh_lobby()
@@ -1582,6 +1724,8 @@ func _refresh_lobby() -> void:
 		_style_btn(mode_b[i], sel_mode == i + 1)
 	for i in range(diff_b.size()):
 		_style_btn(diff_b[i], int(cfg["diff"]) == i)
+	for i in range(map_b.size()):
+		_style_btn(map_b[i], sel_map == i)
 
 
 func _record_result(win: bool) -> void:
@@ -1671,6 +1815,12 @@ func _refresh_showcase() -> void:
 
 
 func _show_lobby(title: String) -> void:
+	for f in fighters:
+		if is_instance_valid(f):
+			f.queue_free()
+	fighters.clear()
+	player = null
+	_set_map(false)
 	lobby.visible = true
 	lb_result.text = "" if title == "ZONA: ULTIMATUM" else title
 	char_panel.visible = false
