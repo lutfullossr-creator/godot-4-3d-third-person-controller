@@ -461,7 +461,7 @@ func _assist(p, delta: float) -> void:
 	var dh: Vector3 = (best.aim_point(true) - eye_p).normalized()
 	var ty := atan2(-db.x, -db.z)
 	var lo := asin(clampf(db.y, -1.0, 1.0))
-	var hi := asin(clampf(dh.y, -1.0, 1.0)) + AIM_HEAD[aim_lvl]
+	var hi: float = asin(clampf(dh.y, -1.0, 1.0)) + AIM_HEAD[aim_lvl]
 	hi = maxf(hi, lo + 0.01)
 	var k := clampf(rate * delta, 0.0, 1.0)
 	var yk := k * (0.25 if drag_t > 0.0 else 1.0)
