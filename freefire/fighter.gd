@@ -104,10 +104,13 @@ var vis: Node3D
 var leg_l: Node3D
 var leg_r: Node3D
 var anim_t := 0.0
+var sprint := false
 var death_tw: Tween
 var slot := 0
 var slot_wid := [0, 11]
 var slot_mag := [30, 12]
+var slot_res := [150, 60]
+var fired_t := 0.0
 
 
 func _mat(c: Color) -> StandardMaterial3D:
@@ -412,6 +415,7 @@ func give(i: int) -> void:
 	slot = 0
 	slot_wid = [i, alt]
 	slot_mag = [WeaponDB.W[i]["mag"], WeaponDB.W[alt]["mag"]]
+	slot_res = [int(WeaponDB.W[i]["mag"]) * 5, int(WeaponDB.W[alt]["mag"]) * 5]
 	rl = 0.0
 	wid = i
 	mag = slot_mag[0]
@@ -501,6 +505,7 @@ func reset(pos: Vector3, y: float) -> void:
 	head_col.disabled = false
 	if death_tw != null:
 		death_tw.kill()
+	sprint = false
 	vis.rotation.x = 0.0
 	vis.position.y = 0.0
 	vis.scale = Vector3.ONE
@@ -511,7 +516,7 @@ func reset(pos: Vector3, y: float) -> void:
 
 
 func reload() -> void:
-	if rl <= 0.0 and mag < WeaponDB.W[wid]["mag"]:
+	if rl <= 0.0 and mag < WeaponDB.W[wid]["mag"] and (is_bot or int(slot_res[slot]) > 0):
 		rl = WeaponDB.W[wid]["rl"]
 		_play(_snd(RELOAD_NAME[WeaponDB.W[wid]["s"]], "reload"), -4.0, 0.02)
 
@@ -551,10 +556,11 @@ func try_fire() -> void:
 		reload()
 		return
 	mag -= 1
+	fired_t = 1.6
 	cd = w["rate"] * (1.8 if is_bot else 1.0)
 	kick = minf(kick + float(w["rc"]), 3.0)
 	flash_t = 0.05
-	_play(_snd("shot_" + str(w["s"])), -1.0, 0.04)
+	_play(_snd("shot_" + str(w["n"]).to_lower().replace(" ", "_"), "shot_" + str(w["s"])), -1.0, 0.04)
 	var from := origin_override if use_origin else eye()
 	var space := get_world_3d().direct_space_state
 	var mpos := muzzle.global_position
@@ -595,11 +601,20 @@ func _physics_process(delta: float) -> void:
 		last_stance = stance
 		apply_stance()
 	cd -= delta
+	fired_t = maxf(fired_t - delta, 0.0)
 	if rl > 0.0:
 		rl -= delta
 		if rl <= 0.0:
-			mag = WeaponDB.W[wid]["mag"]
+			var need: int = int(WeaponDB.W[wid]["mag"]) - mag
+			var take: int = need if is_bot else mini(need, int(slot_res[slot]))
+			mag += take
+			if not is_bot:
+				slot_res[slot] = int(slot_res[slot]) - take
 	var spd: float = SPEED[stance]
+	if sprint and stance == 0:
+		spd *= 1.6
+	if move_input.length() < 0.1:
+		sprint = false
 	var dir := Basis(Vector3.UP, yaw) * Vector3(move_input.x, 0.0, move_input.y)
 	velocity.x = dir.x * spd
 	velocity.z = dir.z * spd
@@ -651,8 +666,10 @@ func _physics_process(delta: float) -> void:
 	vis.rotation.x = lerpf(vis.rotation.x, want_rot, delta * 12.0)
 	vis.position.y = lerpf(vis.position.y, want_y, delta * 12.0)
 	vis.scale.y = lerpf(vis.scale.y, want_sy, delta * 12.0)
+	_char_anim()
 	gun_root.rotation.x = kick * 0.05 + tilt
 	gun_root.position = Vector3(0.22, bob, -0.15 + kick * 0.04)
+
 
 # ---------- tayyor personaj modeli ----------
 func set_character(path: String) -> void:
@@ -685,48 +702,86 @@ func set_character(path: String) -> void:
 	_char_pose(m)
 
 
+var ch_sk: Skeleton3D = null
+var ch_bones := {}
+
+
 func _char_pose(m: Node3D) -> void:
 	for ap in m.find_children("*", "AnimationPlayer", true, false):
-		var names: Array = []
+		var best_len := 0.0
+		var pick := ""
 		for n in ap.get_animation_list():
-			if str(n) != "RESET":
-				names.append(str(n))
-		if names.is_empty():
-			continue
-		var pick: String = names[0]
-		for n in names:
-			if n.to_lower().contains("rifle") or n.to_lower().contains("idle"):
-				pick = n
-				break
-		var an: Animation = ap.get_animation(pick)
-		if an:
+			var an0: Animation = ap.get_animation(n)
+			if str(n) != "RESET" and an0 != null and an0.length > best_len:
+				best_len = an0.length
+				pick = str(n)
+		if pick != "" and best_len > 0.5:
+			var an: Animation = ap.get_animation(pick)
 			an.loop_mode = Animation.LOOP_LINEAR
-		ap.play(pick)
-		return
+			ap.play(pick)
+			return
 	for sk in m.find_children("*", "Skeleton3D", true, false):
-		_arms_down(sk)
+		ch_sk = sk
+		ch_bones = {}
+		var keys := ["leftarm", "leftforearm", "lefthand", "rightarm", "rightforearm", "righthand", "leftupleg", "leftleg", "leftfoot", "rightupleg", "rightleg", "rightfoot"]
+		for i in range(sk.get_bone_count()):
+			var nm := sk.get_bone_name(i).to_lower()
+			for key in keys:
+				if nm.ends_with(key) and not ch_bones.has(key):
+					ch_bones[key] = i
+		if ch_bones.size() < 6:
+			ch_sk = null
+		return
 
 
-func _arms_down(sk: Skeleton3D) -> void:
-	for i in range(sk.get_bone_count()):
-		var nm := sk.get_bone_name(i).to_lower()
-		if not (nm.ends_with("leftarm") or nm.ends_with("rightarm")):
-			continue
-		var kids := sk.get_bone_children(i)
-		if kids.is_empty():
-			continue
-		var j: int = kids[0]
-		var gi := sk.get_bone_global_rest(i)
-		var gj := sk.get_bone_global_rest(j)
-		var dir := (gj.origin - gi.origin).normalized()
-		var sgn := 1.0 if dir.x >= 0.0 else -1.0
-		var target := Vector3(0.12 * sgn, -1.0, -0.25).normalized()
-		if dir.dot(target) < -0.99:
-			continue
-		var q := Quaternion(dir, target)
-		var par := sk.get_bone_parent(i)
-		var pg := Basis.IDENTITY
-		if par >= 0:
-			pg = sk.get_bone_global_rest(par).basis
-		var loc := pg.inverse() * (Basis(q) * gi.basis)
-		sk.set_bone_pose_rotation(i, loc.orthonormalized().get_rotation_quaternion())
+func _set_abs(i: int, g: Basis) -> void:
+	var par := ch_sk.get_bone_parent(i)
+	var pg := Basis.IDENTITY
+	if par >= 0:
+		pg = ch_sk.get_bone_global_pose(par).basis
+	ch_sk.set_bone_pose_rotation(i, (pg.inverse() * g).orthonormalized().get_rotation_quaternion())
+
+
+func _point_bone(a: String, b: String, target: Vector3) -> void:
+	if not ch_bones.has(a) or not ch_bones.has(b):
+		return
+	var i: int = ch_bones[a]
+	var j: int = ch_bones[b]
+	var gi := ch_sk.get_bone_global_rest(i)
+	var gj := ch_sk.get_bone_global_rest(j)
+	var rd := (gj.origin - gi.origin).normalized()
+	var td := target.normalized()
+	if rd.dot(td) < -0.99:
+		return
+	_set_abs(i, Basis(Quaternion(rd, td)) * gi.basis)
+
+
+func _turn_bone(key: String, ang: float) -> void:
+	if not ch_bones.has(key):
+		return
+	var i: int = ch_bones[key]
+	_set_abs(i, Basis(Vector3.RIGHT, ang) * ch_sk.get_bone_global_rest(i).basis)
+
+
+func _char_anim() -> void:
+	if ch_sk == null:
+		return
+	# qoʻllar: qurolni ushlab turish
+	_point_bone("leftarm", "leftforearm", Vector3(-0.25, -0.6, 0.55))
+	_point_bone("leftforearm", "lefthand", Vector3(-0.30, 0.10, 0.95))
+	_point_bone("rightarm", "rightforearm", Vector3(0.25, -0.6, 0.55))
+	_point_bone("rightforearm", "righthand", Vector3(0.40, 0.15, 0.90))
+	# oyoqlar: yurish, sakrash
+	var air := not is_on_floor()
+	for side in ["left", "right"]:
+		var sw: float = leg_l.rotation.x if side == "left" else leg_r.rotation.x
+		var th := -sw
+		var bend := maxf(0.0, -sw) * 1.4
+		if air:
+			th -= 0.35
+			bend += 0.6
+		_turn_bone(side + "upleg", th)
+		_turn_bone(side + "leg", th + bend)
+		if ch_bones.has(side + "foot"):
+			var fi: int = ch_bones[side + "foot"]
+			_set_abs(fi, ch_sk.get_bone_global_rest(fi).basis)
