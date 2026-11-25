@@ -624,7 +624,7 @@ func _think(b, delta: float) -> void:
 	b.move_input = Vector2(b.ai_strafe * 0.7, fw)
 	if big_map:
 		b.sprint = dist > 35.0
-		var id := b.get_instance_id()
+		var id: int = b.get_instance_id()
 		var st: Dictionary = bot_st.get(id, {"t": 0.0, "side": 1.0, "until": 0.0})
 		var spd := Vector2(b.velocity.x, b.velocity.z).length()
 		if b.move_input.length() > 0.3 and spd < 0.6:
