@@ -720,12 +720,13 @@ func _char_pose(m: Node3D) -> void:
 			an.loop_mode = Animation.LOOP_LINEAR
 			ap.play(pick)
 			return
-	for sk in m.find_children("*", "Skeleton3D", true, false):
+	for skv in m.find_children("*", "Skeleton3D", true, false):
+		var sk: Skeleton3D = skv
 		ch_sk = sk
 		ch_bones = {}
 		var keys := ["leftarm", "leftforearm", "lefthand", "rightarm", "rightforearm", "righthand", "leftupleg", "leftleg", "leftfoot", "rightupleg", "rightleg", "rightfoot"]
 		for i in range(sk.get_bone_count()):
-			var nm := sk.get_bone_name(i).to_lower()
+			var nm: String = sk.get_bone_name(i).to_lower()
 			for key in keys:
 				if nm.ends_with(key) and not ch_bones.has(key):
 					ch_bones[key] = i
