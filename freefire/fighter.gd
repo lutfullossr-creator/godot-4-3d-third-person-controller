@@ -19,7 +19,7 @@ const MODELS := {
 }
 const MODEL_FOR := {"M4A1": "AK47", "AK47": "AK47", "SCAR": "AK47", "AWM": "M700", "KAR98K": "M700"}
 
-static var _fx: Array = []
+static var _fx_mods: Array = []
 static var _fx_loaded := false
 static var _fx_bad: Array = []
 static var _guns_files: Array = []
@@ -38,7 +38,7 @@ const GUN_KEYS := {
 
 static func fx_list() -> Array:
 	if _fx_loaded:
-		return _fx
+		return _fx_mods
 	_fx_loaded = true
 	var names: Array = []
 	for fn in DirAccess.get_files_at("res://freefire"):
@@ -49,12 +49,12 @@ static func fx_list() -> Array:
 	for n in names:
 		var sc = load("res://freefire/" + n)
 		if sc != null and sc.can_instantiate():
-			_fx.append(sc.new())
+			_fx_mods.append(sc.new())
 		else:
 			_fx_bad.append(n)
 	if not _fx_bad.is_empty():
 		Engine.set_meta("zona_fxbad", ", ".join(_fx_bad))
-	return _fx
+	return _fx_mods
 
 
 func _fx_call(fn: String, args: Array) -> void:
@@ -67,6 +67,8 @@ static func _scan_guns() -> void:
 	if _guns_scanned:
 		return
 	_guns_scanned = true
+	if not DirAccess.dir_exists_absolute("res://freefire/models/guns"):
+		return
 	var out: Array = []
 	for fn in DirAccess.get_files_at("res://freefire/models/guns"):
 		var n: String = fn.trim_suffix(".remap").trim_suffix(".import")
@@ -195,7 +197,7 @@ var leg_l: Node3D
 var leg_r: Node3D
 var anim_t := 0.0
 var sprint_blend := 0.0
-var was_air := false
+var air_t := 0.0
 var sprint := false
 var death_tw: Tween
 var slot := 0
@@ -792,9 +794,12 @@ func _physics_process(delta: float) -> void:
 	flash_mesh.visible = flash_t > 0.0
 	flash_light.visible = flash_t > 0.0
 	var grounded := is_on_floor()
-	if grounded and was_air:
-		_play(_snd("step"), -3.0, 0.1)
-	was_air = not grounded
+	if grounded:
+		if air_t > 0.35:
+			_play(_snd("step"), -3.0, 0.1)
+		air_t = 0.0
+	else:
+		air_t += delta
 	var moving := move_input.length() > 0.1 and is_on_floor()
 	if moving:
 		walk_t += delta * (9.0 if stance == 0 else 5.0)

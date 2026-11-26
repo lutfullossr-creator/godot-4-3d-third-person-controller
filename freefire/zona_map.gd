@@ -4231,7 +4231,7 @@ func build(parent: Node3D, with_lights: bool = false) -> void:
 	for t in DATA:
 		var arr: PackedFloat32Array = DATA[t]
 		var n := int(arr.size() / 7)
-		var solid := not (t in NOCOL)
+		var solid: bool = not (t in NOCOL)
 		var mesh: Mesh
 		match SHAPE.get(t, "box"):
 			"sph":
