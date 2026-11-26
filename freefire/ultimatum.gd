@@ -76,6 +76,11 @@ var chars: Array = []
 var sel_char := 0
 var char_btn: Button
 var drag_t := 0.0
+const API := 1
+var mods_bad: Array = []
+var mods: Array = []
+var rules := {}
+var inv_store := {}
 var arena_root: Node3D
 var city_root: Node3D = null
 var city_script = null
@@ -122,6 +127,7 @@ var edit_drag := -1
 
 
 func _ready() -> void:
+	_load_mods()
 	randomize()
 	DisplayServer.screen_set_orientation(DisplayServer.SCREEN_LANDSCAPE)
 	sfx2d = AudioStreamPlayer.new()
@@ -298,6 +304,86 @@ func _build_ui() -> void:
 	_build_extra_ui()
 
 
+func _load_mods() -> void:
+	mods = []
+	mods_bad = []
+	var names: Array = []
+	for fn in DirAccess.get_files_at("res://freefire"):
+		var n: String = fn.trim_suffix(".remap").trim_suffix(".import")
+		if n.begins_with("mod_") and n.ends_with(".gd") and not names.has(n):
+			names.append(n)
+	names.sort()
+	for n in names:
+		var sc = load("res://freefire/" + n)
+		if sc != null and sc.can_instantiate():
+			var m = sc.new()
+			if m.has_method("setup"):
+				m.setup(self)
+			mods.append(m)
+		else:
+			mods_bad.append(n)
+	if not mods_bad.is_empty():
+		Engine.set_meta("zona_modbad", ", ".join(mods_bad))
+
+
+func _mod_call(fn: String, args: Array = []) -> void:
+	for m in mods:
+		if m.has_method(fn):
+			m.callv(fn, args)
+
+
+func _mod_str(fn: String, args: Array = []) -> String:
+	for m in mods:
+		if m.has_method(fn):
+			var r = m.callv(fn, args)
+			if r is String and r != "":
+				return r
+	return ""
+
+
+func _mod_bool(fn: String, args: Array = []) -> bool:
+	for m in mods:
+		if m.has_method(fn) and m.callv(fn, args):
+			return true
+	return false
+
+
+func _btn_defs() -> Dictionary:
+	var d: Dictionary = DEF_LAYOUT.duplicate(true)
+	for m in mods:
+		if m.has_method("buttons"):
+			var bd: Dictionary = m.buttons()
+			for k in bd:
+				d[k] = bd[k]
+	return d
+
+
+func inv(f) -> Dictionary:
+	var id: int = f.get_instance_id()
+	if not inv_store.has(id):
+		inv_store[id] = {"gren": 0, "med": 0, "gcd": 0.0, "kcd": 0.0, "heal": 0.0, "hp0": 0}
+	return inv_store[id]
+
+
+func _unstick(b, delta: float) -> void:
+	var id: int = b.get_instance_id()
+	var st: Dictionary = bot_st.get(id, {"t": 0.0, "side": 1.0, "until": 0.0})
+	var spd := Vector2(b.velocity.x, b.velocity.z).length()
+	if b.move_input.length() > 0.3 and spd < 0.6:
+		st["t"] = float(st["t"]) + delta
+	else:
+		st["t"] = maxf(float(st["t"]) - delta, 0.0)
+	if float(st["t"]) > 0.5:
+		st["until"] = 1.4
+		st["side"] = [-1.0, 1.0][randi() % 2]
+		st["t"] = 0.0
+		b.want_jump = true
+	if float(st["until"]) > 0.0:
+		st["until"] = float(st["until"]) - delta
+		b.move_input = Vector2(float(st["side"]), -0.4)
+	bot_st[id] = st
+
+
 func _scan_chars() -> void:
 	chars = []
 	for fn in DirAccess.get_files_at("res://freefire/models"):
@@ -433,12 +519,15 @@ func _zone_update(delta: float) -> void:
 
 func _start_match(n: int) -> void:
 	_hide_lobby()
-	if sel_map == 1 and city_root == null:
+	if sel_map >= 1 and city_root == null:
 		lbl_msg.text = "Xarita yuklanmoqda..."
 		await get_tree().process_frame
 		await get_tree().process_frame
 		lbl_msg.text = ""
-	_set_map(sel_map == 1)
+	_set_map(sel_map >= 1)
+	rules = {}
+	inv_store.clear()
+	_mod_call("on_match_start", [n])
 	mode_n = n
 	round_i = 0
 	score = [0, 0]
@@ -453,11 +542,16 @@ func _start_match(n: int) -> void:
 			add_child(f)
 			f.hit_info.connect(_on_hit)
 			fighters.append(f)
-			if not chars.is_empty():
-				var ci: int = sel_char if (t == 0 and k == 0) else randi() % chars.size()
+			var is_me: bool = (t == 0 and k == 0)
+			var cp := _mod_str("pick_character", [is_me])
+			if cp != "":
+				f.set_character(cp)
+			elif not chars.is_empty():
+				var ci: int = sel_char if is_me else randi() % chars.size()
 				f.set_character("res://freefire/models/" + str(chars[ci]))
-			if t == 0 and k == 0:
+			if is_me:
 				player = f
+			_mod_call("on_spawn", [f, is_me])
 	menu_panel.visible = false
 	_begin_round()
 
@@ -492,6 +586,8 @@ func _begin_round() -> void:
 			else:
 				f.reset(Vector3(x, 0.1, 16.0 if t == 0 else -16.0), 0.0 if t == 0 else PI)
 			idx += 1
+	if _mod_bool("on_round_start", [round_i]):
+		return
 	state = S.PICK
 	if round_i < 2:
 		pick_title.text = "Raund %d/5: qurol tanlang (hamma shu qurol bilan)" % (round_i + 1)
@@ -538,6 +634,7 @@ func _end_round(w: int) -> void:
 
 
 func _check_round(delta: float) -> void:
+	_mod_call("on_update", [delta])
 	var a := [0, 0]
 	var hpsum := [0, 0]
 	for f in fighters:
@@ -583,6 +680,7 @@ func _on_hit(attacker, target, dmg: int, head: bool) -> void:
 	if target.hp <= 0:
 		if attacker == player:
 			cfg["kills"] = int(cfg["kills"]) + 1
+		_mod_call("on_kill", [attacker, target, head])
 		feed.append({"t": 4.0, "s": "%s  >  %s%s" % [_name_of(attacker), _name_of(target), "  [HEADSHOT]" if head else ""]})
 		if feed.size() > 4:
 			feed.pop_front()
@@ -602,6 +700,8 @@ func _nearest_enemy(b):
 
 
 func _think(b, delta: float) -> void:
+	if _mod_bool("on_think", [b, delta]):
+		return
 	var t = _nearest_enemy(b)
 	if t == null:
 		b.move_input = Vector2.ZERO
@@ -624,22 +724,7 @@ func _think(b, delta: float) -> void:
 	b.move_input = Vector2(b.ai_strafe * 0.7, fw)
 	if big_map:
 		b.sprint = dist > 35.0
-		var id: int = b.get_instance_id()
-		var st: Dictionary = bot_st.get(id, {"t": 0.0, "side": 1.0, "until": 0.0})
-		var spd := Vector2(b.velocity.x, b.velocity.z).length()
-		if b.move_input.length() > 0.3 and spd < 0.6:
-			st["t"] = float(st["t"]) + delta
-		else:
-			st["t"] = maxf(float(st["t"]) - delta, 0.0)
-		if float(st["t"]) > 0.5:
-			st["until"] = 1.4
-			st["side"] = [-1.0, 1.0][randi() % 2]
-			st["t"] = 0.0
-			b.want_jump = true
-		if float(st["until"]) > 0.0:
-			st["until"] = float(st["until"]) - delta
-			b.move_input = Vector2(float(st["side"]), -0.4)
-		bot_st[id] = st
+		_unstick(b, delta)
 	var aim_pt: Vector3 = t.aim_point(b.ai_head)
 	b.use_origin = false
 	var jit: float = [0.06, 0.03, 0.012][clampi(int(cfg["diff"]), 0, 2)]
@@ -760,8 +845,9 @@ func _update_cam() -> void:
 # ---------- sozlamalar va tugma joylashuvi ----------
 func _load_settings() -> void:
 	layout = {}
-	for k in DEF_LAYOUT:
-		var d: Dictionary = DEF_LAYOUT[k]
+	var defs := _btn_defs()
+	for k in defs:
+		var d: Dictionary = defs[k]
 		layout[k] = {"x": d["x"], "y": d["y"], "s": 1.0, "a": 0.55}
 	if FileAccess.file_exists(SETTINGS_PATH):
 		var f := FileAccess.open(SETTINGS_PATH, FileAccess.READ)
@@ -917,6 +1003,7 @@ func _build_extra_ui() -> void:
 	_slider_row(sv, "Umumiy ovoz", 0.0, 1.0, 0.05, "vol")
 	_check_row(sv, "Lobbi musiqasi", "music")
 	_choice_row(sv, "Bot qiyinligi", "diff", ["Oson", "Oʻrta", "Qiyin"])
+	_mod_call("on_settings_build", [sv])
 	sv.add_child(_mini_btn("SAQLASH VA ORQAGA", _close_settings, 560.0))
 	sc.add_child(sv)
 	settings_panel.add_child(sc)
@@ -972,8 +1059,9 @@ func _edit_done() -> void:
 
 
 func _edit_reset() -> void:
-	for k in DEF_LAYOUT:
-		var d: Dictionary = DEF_LAYOUT[k]
+	var defs := _btn_defs()
+	for k in defs:
+		var d: Dictionary = defs[k]
 		layout[k] = {"x": d["x"], "y": d["y"], "s": 1.0, "a": 0.55}
 	_update_edit_label()
 
@@ -1062,6 +1150,8 @@ func _icon(n: String, c: Vector2, r: float, col: Color) -> void:
 		"pause":
 			hud.draw_rect(Rect2(c + Vector2(-u * 0.55, -u * 0.7), Vector2(u * 0.4, u * 1.4)), col)
 			hud.draw_rect(Rect2(c + Vector2(u * 0.15, -u * 0.7), Vector2(u * 0.4, u * 1.4)), col)
+		_:
+			_mod_bool("draw_icon", [n, hud, c, r, col])
 
 
 func _toggle_stance(s: int) -> void:
@@ -1073,9 +1163,10 @@ func _btns() -> Array:
 	var vs := get_viewport().get_visible_rect().size
 	var k := vs.y / 720.0
 	var out: Array = []
-	for n in DEF_LAYOUT:
+	var defs := _btn_defs()
+	for n in defs:
 		var l: Dictionary = layout[n]
-		var base: float = DEF_LAYOUT[n]["r"]
+		var base: float = defs[n]["r"]
 		var ic: String = "fire" if n == "fire2" else n
 		out.append([n, Vector2(float(l["x"]) * vs.x, float(l["y"]) * vs.y), base * float(l["s"]) * k, ic, float(l["a"])])
 	return out
@@ -1115,6 +1206,8 @@ func _btn_down(n: String) -> void:
 			zoomed = not zoomed
 		"sprint":
 			player.sprint = not player.sprint
+		_:
+			_mod_bool("on_btn", [n])
 
 
 func _input(e: InputEvent) -> void:
@@ -1140,6 +1233,8 @@ func _input(e: InputEvent) -> void:
 			KEY_SHIFT:
 				if player != null:
 					player.sprint = not player.sprint
+			_:
+				_mod_bool("on_key", [e.keycode])
 		return
 	var vs := get_viewport().get_visible_rect().size
 	if e is InputEventScreenTouch:
@@ -1198,7 +1293,7 @@ func _process(delta: float) -> void:
 	elif state == S.END:
 		end_t -= delta
 		if end_t <= 0.0:
-			var win_to := 2 if big_map else 3
+			var win_to: int = int(rules.get("win_to", 2 if big_map else 3))
 			if score[0] >= win_to or score[1] >= win_to:
 				_record_result(score[0] >= win_to)
 				_show_menu("GʻALABA!" if score[0] >= win_to else "Magʻlubiyat")
@@ -1208,10 +1303,12 @@ func _process(delta: float) -> void:
 				_begin_round()
 	if player != null and state != S.MENU:
 		_update_cam()
-		var tot := 3 if big_map else 5
+		var tot: int = int(rules.get("rounds", 3 if big_map else 5))
 		lbl_top.text = "Raund %d/%d     %d : %d     %d s" % [mini(round_i + 1, tot), tot, score[0], score[1], int(ceil(maxf(round_t, 0.0)))]
 		if big_map:
 			lbl_top.text += "     Zona %d m" % int(zone_r)
+		if rules.has("top"):
+			lbl_top.text = str(rules["top"])
 		lbl_w.text = ""
 		lbl_hp.text = ""
 	else:
@@ -1262,6 +1359,7 @@ func _draw_hud() -> void:
 	top_y = _draw_squad(k, top_y)
 	_draw_weapon_panel(vs, k)
 	_draw_hp(vs, k)
+	_mod_call("draw_hud", [hud, vs, k])
 	var fy := top_y + 10.0 * k
 	for i in range(feed.size()):
 		hud.draw_string(ThemeDB.fallback_font, Vector2(14.0 * k, fy + 22.0 * k + i * 26.0 * k), str(feed[i]["s"]), HORIZONTAL_ALIGNMENT_LEFT, 520.0 * k, int(20.0 * k))
@@ -1450,6 +1548,7 @@ func _mkbtn(text: String, sz: int, pos: Vector2, size: Vector2, gold: bool, cb: 
 	b.size = size
 	b.add_theme_font_size_override("font_size", sz)
 	_style_btn(b, gold)
+	b.pressed.connect(_ui_click)
 	b.pressed.connect(cb)
 	return b
 
@@ -1527,9 +1626,9 @@ func _build_lobby() -> void:
 		mp.add_child(mb)
 		mode_b.append(mb)
 	map_b = []
-	var mn2 := ["ARENA", "KATTA ZONA"]
-	for i in range(2):
-		var xb2 := _mkbtn(mn2[i], int(20 * k), Vector2(12 + i * 178, 84) * k, Vector2(168, 42) * k, false, _lb_map.bind(i))
+	var mn2 := ["ARENA", "KATTA ZONA", "BR LOOT"]
+	for i in range(3):
+		var xb2 := _mkbtn(mn2[i], int(17 * k), Vector2(12 + i * 120, 84) * k, Vector2(114, 42) * k, false, _lb_map.bind(i))
 		mp.add_child(xb2)
 		map_b.append(xb2)
 	var dt := _lab("Bot qiyinligi", int(16 * k))
@@ -1617,6 +1716,7 @@ func _build_lobby() -> void:
 	arsenal_panel.add_child(_mkbtn("TANLASH", int(26 * k), Vector2(20, 540) * k, Vector2(350, 60) * k, true, _ars_confirm))
 	arsenal_panel.add_child(_mkbtn("YOPISH", int(26 * k), Vector2(390, 540) * k, Vector2(350, 60) * k, false, _lb_arsenal_toggle))
 	arsenal_panel.visible = false
+	_mod_call("on_lobby_build", [lobby, k])
 
 
 func _draw_ars_icon() -> void:
@@ -1733,6 +1833,7 @@ func _record_result(win: bool) -> void:
 	if win:
 		cfg["wins"] = int(cfg["wins"]) + 1
 	_save_settings()
+	_mod_call("on_match_end", [win])
 
 
 func _build_stage() -> void:
@@ -1815,6 +1916,7 @@ func _refresh_showcase() -> void:
 
 
 func _show_lobby(title: String) -> void:
+	_mod_call("on_lobby")
 	for f in fighters:
 		if is_instance_valid(f):
 			f.queue_free()
@@ -1823,6 +1925,11 @@ func _show_lobby(title: String) -> void:
 	_set_map(false)
 	lobby.visible = true
 	lb_result.text = "" if title == "ZONA: ULTIMATUM" else title
+	var bad: Array = mods_bad.duplicate()
+	if Engine.has_meta("zona_fxbad"):
+		bad.append(str(Engine.get_meta("zona_fxbad")))
+	if not bad.is_empty() and lb_result.text == "":
+		lb_result.text = "Plagin xato: " + ", ".join(bad)
 	char_panel.visible = false
 	arsenal_panel.visible = false
 	_fill_char_panel()

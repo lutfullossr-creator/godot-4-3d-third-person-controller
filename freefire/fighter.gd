@@ -19,6 +19,9 @@ const MODELS := {
 }
 const MODEL_FOR := {"M4A1": "AK47", "AK47": "AK47", "SCAR": "AK47", "AWM": "M700", "KAR98K": "M700"}
 
+static var _fx: Array = []
+static var _fx_loaded := false
+static var _fx_bad: Array = []
 static var _guns_files: Array = []
 static var _guns_scanned := false
 static var _extra := {}
@@ -31,6 +34,33 @@ const GUN_KEYS := {
 	"pistol": ["pistol", "usp", "eagle", "revolver", "glock", "handgun"],
 	"lmg": ["lmg", "machine", "m249", "minigun", "heavy"],
 }
+
+
+static func fx_list() -> Array:
+	if _fx_loaded:
+		return _fx
+	_fx_loaded = true
+	var names: Array = []
+	for fn in DirAccess.get_files_at("res://freefire"):
+		var n: String = fn.trim_suffix(".remap").trim_suffix(".import")
+		if n.begins_with("fx_") and n.ends_with(".gd") and not names.has(n):
+			names.append(n)
+	names.sort()
+	for n in names:
+		var sc = load("res://freefire/" + n)
+		if sc != null and sc.can_instantiate():
+			_fx.append(sc.new())
+		else:
+			_fx_bad.append(n)
+	if not _fx_bad.is_empty():
+		Engine.set_meta("zona_fxbad", ", ".join(_fx_bad))
+	return _fx
+
+
+func _fx_call(fn: String, args: Array) -> void:
+	for m in fx_list():
+		if m.has_method(fn):
+			m.callv(fn, args)
 
 
 static func _scan_guns() -> void:
@@ -650,6 +680,7 @@ func hurt(dmg: int, by, head: bool) -> void:
 	if not alive:
 		return
 	hp -= dmg
+	_fx_call("on_hurt", [self, dmg, by, head])
 	_play(_snd("headshot") if head else _snd("hit"), -6.0 if is_bot else -2.0, 0.03)
 	hit_info.emit(by, self, dmg, head)
 	if hp <= 0:
@@ -682,6 +713,7 @@ func try_fire() -> void:
 		return
 	mag -= 1
 	fired_t = 1.6
+	_fx_call("on_fire", [self])
 	cd = w["rate"] * (1.8 if is_bot else 1.0)
 	kick = minf(kick + float(w["rc"]), 3.0)
 	flash_t = 0.05
@@ -796,6 +828,7 @@ func _physics_process(delta: float) -> void:
 	vis.position.y = lerpf(vis.position.y, want_y, delta * 12.0)
 	vis.scale.y = lerpf(vis.scale.y, want_sy, delta * 12.0)
 	_char_anim()
+	_fx_call("update", [self, delta])
 	gun_root.rotation.x = kick * 0.05 + tilt
 	gun_root.position = Vector3(0.22, bob, -0.15 + kick * 0.04)
 
@@ -829,6 +862,7 @@ func set_character(path: String) -> void:
 		m.scale = m.scale * s
 		m.position = Vector3(-(mn.x + mx.x) * 0.5 * s, -mn.y * s, -(mn.z + mx.z) * 0.5 * s)
 	_char_pose(m)
+	_fx_call("on_character", [self])
 
 
 var ch_sk: Skeleton3D = null
