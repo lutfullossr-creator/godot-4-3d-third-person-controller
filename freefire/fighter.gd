@@ -191,6 +191,14 @@ var body_mesh: MeshInstance3D
 var head_mesh: MeshInstance3D
 var rig: Node3D
 var gun_root: Node3D
+var scope_node = null
+const SCOPE_CAP := {"pistol": 1, "shotgun": 1, "smg": 2, "ar": 3, "lmg": 3, "sniper": 4}
+var scope_lvl := 0:
+	set(v):
+		if v == scope_lvl:
+			return
+		scope_lvl = v
+		call_deferred("_attach_scope")
 var parts_root: Node3D
 var muzzle: Node3D
 var flash_light: OmniLight3D
@@ -537,9 +545,66 @@ func _make_model(key: String):
 
 
 func _build_gun() -> void:
+	_build_gun_core()
+	call_deferred("_attach_scope")
+
+
+func _scope_cap() -> int:
+	return int(SCOPE_CAP.get(str(WeaponDB.W[wid]["s"]), 3))
+
+
+func _gun_aabb() -> AABB:
+	var inv := gun_root.global_transform.affine_inverse()
+	var have := false
+	var res := AABB()
+	for mi in parts_root.find_children("*", "MeshInstance3D", true, false):
+		var a: AABB = inv * mi.global_transform * mi.get_aabb()
+		if have:
+			res = res.merge(a)
+		else:
+			res = a
+			have = true
+	if not have:
+		return AABB(Vector3(-0.03, -0.05, -0.4), Vector3(0.06, 0.12, 0.6))
+	return res
+
+
+func _attach_scope() -> void:
+	if scope_node != null and is_instance_valid(scope_node):
+		scope_node.queue_free()
+	scope_node = null
+	var lvl := mini(scope_lvl, _scope_cap())
+	if lvl <= 0 or gun_root == null or parts_root == null or not is_inside_tree():
+		return
+	var sc = load("res://freefire/scope_rig.gd")
+	if sc == null or not sc.can_instantiate():
+		return
+	var n = sc.new()
+	n.build(lvl)
+	gun_root.add_child(n)
+	var box := _gun_aabb()
+	n.position = Vector3(box.get_center().x, box.end.y + 0.002, box.get_center().z - box.size.z * 0.05)
+	scope_node = n
+
+
+func _bot_scope() -> int:
+	var t := str(WeaponDB.W[wid]["s"])
+	if t == "sniper":
+		return 4
+	if t == "ar":
+		return int([0, 1, 2, 2, 3][randi() % 5])
+	if t == "lmg":
+		return 2
+	if t == "smg":
+		return int([0, 1][randi() % 2])
+	return 0
+
+
+func _build_gun_core() -> void:
 	if parts_root == null:
 		return
 	for c in parts_root.get_children():
+		parts_root.remove_child(c)
 		c.queue_free()
 	var mk: String = MODEL_FOR.get(WeaponDB.W[wid]["n"], "")
 	if mk == "":
@@ -579,6 +644,8 @@ func give(i: int) -> void:
 	rl = 0.0
 	wid = i
 	mag = slot_mag[0]
+	if is_bot:
+		scope_lvl = _bot_scope()
 
 
 func swap() -> void:
@@ -728,14 +795,14 @@ func try_fire() -> void:
 	var space := get_world_3d().direct_space_state
 	var mpos := muzzle.global_position
 	for i in range(int(w["pel"])):
-		var sp: float = w["spread"] * (3.0 if is_bot else 1.0) * (0.6 if aiming else 1.0)
+		var sp: float = w["spread"] * (3.0 if is_bot else 1.0) * (0.6 if aiming else 1.0) * (0.55 if (aiming and scope_lvl >= 2) else 1.0)
 		var d := (aim_dir + Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)) * sp).normalized()
-		var q := PhysicsRayQueryParameters3D.create(from, from + d * 120.0, 7, [get_rid(), head_area.get_rid()])
+		var q := PhysicsRayQueryParameters3D.create(from, from + d * 350.0, 7, [get_rid(), head_area.get_rid()])
 		q.collide_with_areas = true
 		var r := space.intersect_ray(q)
 		if r.is_empty():
 			if i < 2:
-				_tracer(mpos, from + d * 120.0)
+				_tracer(mpos, from + d * 350.0)
 			continue
 		var hp_pos: Vector3 = r["position"]
 		if i < 2:

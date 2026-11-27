@@ -78,9 +78,12 @@ var sel_char := 0
 var char_btn: Button
 var drag_t := 0.0
 var scope_b: Array = []
-const SCOPE_MULT := [1.3, 2.0, 4.0, 8.0]
-const SCOPE_NAMES := ["Yoʻq", "2×", "4×", "8×"]
-const SCOPE_MAX := {"pistol": 1, "shotgun": 1, "smg": 2, "ar": 3, "lmg": 3, "sniper": 3}
+const SCOPE_MULT := [1.25, 1.0, 2.0, 4.0, 8.0]
+const SCOPE_NAMES := ["Yoʻq", "1×", "2×", "4×", "8×"]
+const SCOPE_MAX := {"pistol": 1, "shotgun": 1, "smg": 2, "ar": 3, "lmg": 3, "sniper": 4}
+const SCOPE_FOV := [60.0, 56.0, 44.0, 42.0, 40.0]
+var pip_vp: SubViewport = null
+var pip_cam: Camera3D = null
 var cam_dist := 3.0
 var cam_side := 0.4
 const API := 1
@@ -756,6 +759,7 @@ func _player_input(delta: float) -> void:
 		mv.x += 1.0
 	p.move_input = mv.limit_length(1.0)
 	p.aiming = zoomed
+	p.scope_lvl = _scope_eff()
 	p.free_look_on = bool(cfg["freelook"])
 	if Input.is_key_pressed(KEY_LEFT):
 		p.yaw += 2.0 * delta
@@ -840,26 +844,69 @@ func _scope_eff() -> int:
 
 
 func _scope_fp() -> bool:
-	return zoomed and _scope_eff() >= 2
+	return zoomed and _scope_eff() >= 1
 
 
 func _scope_fov() -> float:
 	if not zoomed:
 		return 75.0
-	var m: float = SCOPE_MULT[_scope_eff()]
-	return rad_to_deg(2.0 * atan(tan(deg_to_rad(75.0) * 0.5) / m))
+	return float(SCOPE_FOV[_scope_eff()])
 
 
 func _zoom_sens() -> float:
 	if not zoomed:
 		return 1.0
-	var m: float = SCOPE_MULT[_scope_eff()]
-	return clampf(1.0 / pow(m, 0.7), 0.2, 1.0)
+	var e := _scope_eff()
+	var m: float = maxf(float(SCOPE_MULT[e]), 1.0)
+	var fovk: float = float(SCOPE_FOV[e]) / 75.0
+	return clampf(fovk / pow(m, 0.85), 0.08, 1.0)
 
 
 func _cycle_scope() -> void:
-	cfg["scope"] = (int(cfg["scope"]) + 1) % 4
+	cfg["scope"] = (int(cfg["scope"]) + 1) % 5
 	_save_settings()
+
+
+func _pip_ensure() -> void:
+	if pip_vp != null:
+		return
+	var sz: int = [256, 320, 448][clampi(int(cfg["quality"]), 0, 2)]
+	pip_vp = SubViewport.new()
+	pip_vp.size = Vector2i(sz, sz)
+	pip_vp.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	pip_vp.msaa_3d = Viewport.MSAA_DISABLED
+	add_child(pip_vp)
+	pip_cam = Camera3D.new()
+	pip_cam.cull_mask = 1048575 & ~524288
+	pip_cam.near = 0.05
+	pip_cam.far = 500.0
+	pip_vp.add_child(pip_cam)
+	pip_cam.current = true
+
+
+func _pip_off(sn) -> void:
+	if pip_vp != null:
+		pip_vp.render_target_update_mode = SubViewport.UPDATE_DISABLED
+	if sn != null and is_instance_valid(sn):
+		sn.set_idle()
+
+
+func _pip_update(p, lens_pos: Vector3, d: Vector3, cam_pos: Vector3) -> void:
+	var sn = p.scope_node
+	if sn.level < 2:
+		sn.set_idle()
+		if pip_vp != null:
+			pip_vp.render_target_update_mode = SubViewport.UPDATE_DISABLED
+		return
+	_pip_ensure()
+	pip_vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS
+	var dist := maxf(cam_pos.distance_to(lens_pos), 0.03)
+	var half := atan(float(sn.lens_r()) / dist)
+	var pf: float = rad_to_deg(2.0 * atan(tan(half) / float(sn.mult())))
+	pip_cam.fov = clampf(pf, 1.0, 60.0)
+	pip_cam.far = minf(cam.far * 2.0, 700.0)
+	pip_cam.global_transform = Transform3D(Basis.from_euler(Vector3(p.pitch, p.yaw, 0.0)), lens_pos + d * 0.05)
+	sn.set_pip(pip_vp.get_texture())
 
 
 func _update_cam(delta: float = 0.016) -> void:
@@ -890,8 +937,19 @@ func _update_cam(delta: float = 0.016) -> void:
 		var hp: Vector3 = hit["position"]
 		pos = hp + (pivot - want).normalized() * 0.25
 	var fp: bool = (v == p) and p.alive and _scope_fp()
-	if fp:
+	var sn = p.scope_node if v == p else null
+	if fp and sn != null and is_instance_valid(sn):
+		var lp: Vector3 = sn.lens_global_pos()
+		pos = lp - d * float(sn.relief())
+		cam.near = 0.02
+		_pip_update(p, lp, d, pos)
+	elif fp:
 		pos = v.eye() + d * 0.12
+		cam.near = 0.05
+		_pip_off(sn)
+	else:
+		cam.near = 0.05
+		_pip_off(sn)
 	if v == p:
 		p.vis.visible = not fp
 	pos += Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)) * v.kick * 0.012
@@ -1408,15 +1466,6 @@ func _draw_hud() -> void:
 		return
 	var k := vs.y / 720.0
 	var c := vs * 0.5
-	if state == S.LIVE and _scope_fp():
-		var rin := vs.y * 0.44
-		var wdt := vs.length()
-		hud.draw_arc(c, rin + wdt * 0.5, 0.0, TAU, 128, Color(0, 0, 0, 1), wdt)
-		hud.draw_arc(c, rin, 0.0, TAU, 96, Color(0, 0, 0, 1), 4.0)
-		hud.draw_line(c + Vector2(-rin, 0), c + Vector2(rin, 0), Color(0, 0, 0, 0.85), 2.0)
-		hud.draw_line(c + Vector2(0, -rin), c + Vector2(0, rin), Color(0, 0, 0, 0.85), 2.0)
-		hud.draw_circle(c, 2.5, Color(1, 0.1, 0.1))
-		hud.draw_string(ThemeDB.fallback_font, c + Vector2(rin * 0.55, rin * 0.9), SCOPE_NAMES[_scope_eff()], HORIZONTAL_ALIGNMENT_LEFT, -1, int(26.0 * k), Color(1, 1, 1, 0.8))
 	for d in [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1)]:
 		hud.draw_line(c + d * 4.0, c + d * 14.0, Color.WHITE, 2.0)
 	if state == S.PICK:
@@ -1788,8 +1837,8 @@ func _build_lobby() -> void:
 	sl.position = Vector2(20, 486) * k
 	arsenal_panel.add_child(sl)
 	scope_b = []
-	for i in range(4):
-		var sb2 := _mkbtn(str(SCOPE_NAMES[i]), int(20 * k), Vector2(110 + i * 150, 478) * k, Vector2(142, 38) * k, false, _lb_scope.bind(i))
+	for i in range(5):
+		var sb2 := _mkbtn(str(SCOPE_NAMES[i]), int(20 * k), Vector2(100 + i * 128, 478) * k, Vector2(122, 38) * k, false, _lb_scope.bind(i))
 		arsenal_panel.add_child(sb2)
 		scope_b.append(sb2)
 	var ck := CheckButton.new()
@@ -1831,6 +1880,7 @@ func _lb_scope(i: int) -> void:
 	cfg["scope"] = i
 	_save_settings()
 	_refresh_scope_btns()
+	_refresh_showcase()
 
 
 func _refresh_scope_btns() -> void:
@@ -2007,6 +2057,7 @@ func _refresh_showcase() -> void:
 	sc_f.collision_mask = 0
 	sc_f.reset(stage.global_position + Vector3(0, 0.05, 0), 0.0)
 	sc_f.give(clampi(int(cfg["fav"]), 0, WeaponDB.W.size() - 1))
+	sc_f.scope_lvl = int(cfg["scope"])
 	sc_f._build_gun()
 	if not chars.is_empty():
 		sc_f.set_character("res://freefire/models/" + str(chars[sel_char]))
