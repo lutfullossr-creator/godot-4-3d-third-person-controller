@@ -1,0 +1,76 @@
+name: Drive sync
+
+# Drive'dagi ZONA_DEPLOY papkasini kuzatadi. Papkada yangi/o'zgargan fayl bo'lsa,
+# uni repoga (freefire/ papkasiga) ko'chiradi va APK/patch build'ni o'zi ishga tushiradi.
+# android.yml, project.godot va .zip fayllar HECH QACHON ko'chirilmaydi.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/10 * * * *"
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: drive-sync
+  cancel-in-progress: false
+
+env:
+  FOLDER_ID: "1bXdHBIoHxibG6SZLi4dOD6GDymcIwuMX"
+
+jobs:
+  sync:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Drive papkasini yuklab olish
+        run: |
+          pip install --quiet gdown
+          rm -rf /tmp/drv
+          mkdir -p /tmp/drv
+          gdown --folder "https://drive.google.com/drive/folders/${FOLDER_ID}" -O /tmp/drv --remaining-ok
+          if ls /tmp/drv/*.gd >/dev/null 2>&1; then
+            SRC=/tmp/drv
+          else
+            SRC=$(find /tmp/drv -mindepth 1 -maxdepth 1 -type d | head -1)
+          fi
+          echo "SRC=$SRC" >> "$GITHUB_ENV"
+          echo "Yuklandi:"
+          find "$SRC" -type f | head -50
+
+      - name: Tekshiruv va repoga ko'chirish
+        run: |
+          set -e
+          test -n "$SRC"
+          bad=0
+          for f in $(find "$SRC" -type f -name '*.gd'); do
+            if [ "$(stat -c %s "$f")" -lt 50 ]; then echo "BO'SH/KICHIK: $f"; bad=1; fi
+            if ! grep -q '^extends' "$f"; then echo "extends yo'q: $f"; bad=1; fi
+          done
+          if [ "$bad" = "1" ]; then echo "Tekshiruvdan o'tmadi, ko'chirilmadi"; exit 1; fi
+          mkdir -p freefire
+          WS="$GITHUB_WORKSPACE"
+          cd "$SRC"
+          find . -type f ! -name 'android.yml' ! -name 'project.godot' ! -name '*.zip' ! -path '*/.*' -print0 | while IFS= read -r -d '' f; do
+            mkdir -p "$WS/freefire/$(dirname "$f")"
+            cp "$f" "$WS/freefire/$f"
+          done
+          cd "$WS"
+
+      - name: Commit va build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "drive-sync"
+          git config user.email "drive-sync@users.noreply.github.com"
+          git add -A freefire
+          if git diff --cached --quiet; then
+            echo "O'zgarish yo'q"
+            exit 0
+          fi
+          git commit -m "Drive sync"
+          git push
+          gh workflow run android.yml --ref main
