@@ -13,6 +13,7 @@ const DEF_LAYOUT := {
 	"reload": {"x": 0.93, "y": 0.40, "r": 46.0},
 	"swap": {"x": 0.83, "y": 0.42, "r": 46.0},
 	"zoom": {"x": 0.70, "y": 0.45, "r": 46.0},
+	"scope": {"x": 0.70, "y": 0.27, "r": 38.0},
 	"sprint": {"x": 0.20, "y": 0.42, "r": 46.0},
 	"pause": {"x": 0.965, "y": 0.07, "r": 34.0},
 }
@@ -50,7 +51,7 @@ var hitm_head := false
 var feed: Array = []
 var sfx2d: AudioStreamPlayer
 var layout := {}
-const CFG_KEYS := ["sens", "vol", "assist", "autofire", "name", "tag", "quality", "fps", "showfps", "minimap", "diff", "kills", "wins", "games", "fav", "autopick", "music"]
+const CFG_KEYS := ["sens", "vol", "assist", "autofire", "name", "tag", "quality", "fps", "showfps", "minimap", "diff", "freelook", "scope", "kills", "wins", "games", "fav", "autopick", "music"]
 const FPS_OPTS := [30, 45, 60, 90, 120]
 const MAP_CRATES := [
 	[Vector3(-6, 0.75, 6), Vector3(3, 1.5, 3)],
@@ -70,12 +71,18 @@ const GUN_ICONS := {
 	"lmg": [[0.00, 0.38, 0.38, 0.46], [0.26, 0.28, 0.80, 0.56], [0.78, 0.34, 0.98, 0.58], [0.40, 0.56, 0.62, 0.90], [0.66, 0.56, 0.74, 0.78]],
 	"pistol": [[0.20, 0.32, 0.80, 0.50], [0.30, 0.50, 0.50, 0.88], [0.52, 0.50, 0.62, 0.64]],
 }
-var cfg := {"sens": 1.0, "vol": 1.0, "assist": 1.0, "autofire": true, "name": "Player", "tag": "", "quality": 1, "fps": 2, "showfps": false, "minimap": true, "diff": 1, "kills": 0, "wins": 0, "games": 0, "fav": 0, "autopick": false, "music": true}
+var cfg := {"sens": 1.0, "vol": 1.0, "assist": 1.0, "autofire": true, "name": "Player", "tag": "", "quality": 1, "fps": 2, "showfps": false, "minimap": true, "diff": 1, "freelook": true, "scope": 0, "kills": 0, "wins": 0, "games": 0, "fav": 0, "autopick": false, "music": true}
 var sun: DirectionalLight3D
 var chars: Array = []
 var sel_char := 0
 var char_btn: Button
 var drag_t := 0.0
+var scope_b: Array = []
+const SCOPE_MULT := [1.3, 2.0, 4.0, 8.0]
+const SCOPE_NAMES := ["Yoʻq", "2×", "4×", "8×"]
+const SCOPE_MAX := {"pistol": 1, "shotgun": 1, "smg": 2, "ar": 3, "lmg": 3, "sniper": 3}
+var cam_dist := 3.0
+var cam_side := 0.4
 const API := 1
 var mods_bad: Array = []
 var mods: Array = []
@@ -748,6 +755,8 @@ func _player_input(delta: float) -> void:
 	if Input.is_key_pressed(KEY_D):
 		mv.x += 1.0
 	p.move_input = mv.limit_length(1.0)
+	p.aiming = zoomed
+	p.free_look_on = bool(cfg["freelook"])
 	if Input.is_key_pressed(KEY_LEFT):
 		p.yaw += 2.0 * delta
 	if Input.is_key_pressed(KEY_RIGHT):
@@ -823,7 +832,37 @@ func _spectate_target():
 	return player
 
 
-func _update_cam() -> void:
+func _scope_eff() -> int:
+	if player == null:
+		return 0
+	var t := str(WeaponDB.W[player.wid]["s"])
+	return mini(int(cfg["scope"]), int(SCOPE_MAX.get(t, 3)))
+
+
+func _scope_fp() -> bool:
+	return zoomed and _scope_eff() >= 2
+
+
+func _scope_fov() -> float:
+	if not zoomed:
+		return 75.0
+	var m: float = SCOPE_MULT[_scope_eff()]
+	return rad_to_deg(2.0 * atan(tan(deg_to_rad(75.0) * 0.5) / m))
+
+
+func _zoom_sens() -> float:
+	if not zoomed:
+		return 1.0
+	var m: float = SCOPE_MULT[_scope_eff()]
+	return clampf(1.0 / pow(m, 0.7), 0.2, 1.0)
+
+
+func _cycle_scope() -> void:
+	cfg["scope"] = (int(cfg["scope"]) + 1) % 4
+	_save_settings()
+
+
+func _update_cam(delta: float = 0.016) -> void:
 	var p = player
 	if p == null:
 		return
@@ -832,7 +871,29 @@ func _update_cam() -> void:
 		v = _spectate_target()
 	var d := Basis.from_euler(Vector3(v.pitch, v.yaw, 0.0)) * Vector3(0, 0, -1)
 	var right := Vector3(cos(v.yaw), 0.0, -sin(v.yaw))
-	var pos: Vector3 = v.eye() - d * 3.0 + right * 0.6 + Vector3.UP * 0.3
+	var shooting: bool = bool(v.aiming) or bool(v.want_fire) or float(v.fired_t) > 1.0
+	var want_dist := 2.3 if zoomed else 3.0
+	var want_side := 0.6 if shooting else 0.35
+	var kk := clampf(9.0 * delta, 0.0, 1.0)
+	cam_dist = lerpf(cam_dist, want_dist, kk)
+	cam_side = lerpf(cam_side, want_side, kk)
+	var pivot: Vector3 = v.eye() + Vector3.UP * 0.1
+	var want: Vector3 = pivot - d * cam_dist + right * cam_side + Vector3.UP * 0.2
+	var ex: Array = []
+	for fi in fighters:
+		if is_instance_valid(fi):
+			ex.append(fi.get_rid())
+	var q := PhysicsRayQueryParameters3D.create(pivot, want, 4294967295, ex)
+	var hit := get_world_3d().direct_space_state.intersect_ray(q)
+	var pos: Vector3 = want
+	if not hit.is_empty():
+		var hp: Vector3 = hit["position"]
+		pos = hp + (pivot - want).normalized() * 0.25
+	var fp: bool = (v == p) and p.alive and _scope_fp()
+	if fp:
+		pos = v.eye() + d * 0.12
+	if v == p:
+		p.vis.visible = not fp
 	pos += Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)) * v.kick * 0.012
 	pos.y = maxf(pos.y, 0.3)
 	cam.global_transform = Transform3D(Basis.from_euler(Vector3(v.pitch, v.yaw, 0.0)), pos)
@@ -993,6 +1054,7 @@ func _build_extra_ui() -> void:
 	_slider_row(sv, "Burilish tezligi", 0.3, 2.5, 0.05, "sens")
 	_slider_row(sv, "Nishonga yordam (kam: bosh oson, koʻp: qorin)", 0.0, 2.0, 0.1, "assist")
 	_check_row(sv, "Avto-otish (nishon dushmanda boʻlsa)", "autofire")
+	_check_row(sv, "Erkin kamera (tursa personaj burilmaydi)", "freelook")
 	sv.add_child(_mini_btn("TUGMALARNI JOYLASHTIRISH", _edit_start, 560.0))
 	sv.add_child(_section("GRAFIKA"))
 	_choice_row(sv, "Sifat (past = tez, kuchsiz telefon uchun)", "quality", ["Past", "Oʻrta", "Yuqori"])
@@ -1138,6 +1200,9 @@ func _icon(n: String, c: Vector2, r: float, col: Color) -> void:
 			hud.draw_line(c + Vector2(u, u * 0.45), c + Vector2(-u, u * 0.45), col, w)
 			hud.draw_line(c + Vector2(-u, u * 0.45), c + Vector2(-u * 0.5, u * 0.05), col, w)
 			hud.draw_line(c + Vector2(-u, u * 0.45), c + Vector2(-u * 0.5, u * 0.85), col, w)
+		"scope":
+			var sc_txt := str(SCOPE_NAMES[int(cfg["scope"])])
+			hud.draw_string(ThemeDB.fallback_font, c + Vector2(-r * 0.8, r * 0.22), sc_txt, HORIZONTAL_ALIGNMENT_CENTER, r * 1.6, int(r * 0.75), col)
 		"zoom":
 			hud.draw_arc(c, u * 1.1, 0.0, TAU, 24, col, w)
 			hud.draw_line(c + Vector2(-u * 1.5, 0), c + Vector2(u * 1.5, 0), col, maxf(2.0, w * 0.6))
@@ -1204,6 +1269,8 @@ func _btn_down(n: String) -> void:
 			player.swap()
 		"zoom":
 			zoomed = not zoomed
+		"scope":
+			_cycle_scope()
 		"sprint":
 			player.sprint = not player.sprint
 		_:
@@ -1230,6 +1297,8 @@ func _input(e: InputEvent) -> void:
 					player.swap()
 			KEY_V:
 				zoomed = not zoomed
+			KEY_Z:
+				_cycle_scope()
 			KEY_SHIFT:
 				if player != null:
 					player.sprint = not player.sprint
@@ -1264,7 +1333,7 @@ func _input(e: InputEvent) -> void:
 			stick_vec = ((e.position - stick_origin) / 70.0).limit_length(1.0)
 		elif (e.index == look_id or str(btn_ids.get(e.index, "")) == "fire" or str(btn_ids.get(e.index, "")) == "fire2") and player != null:
 			drag_t = 0.2
-			var sens := (0.45 if zoomed else 1.0) * float(cfg["sens"])
+			var sens := _zoom_sens() * float(cfg["sens"])
 			player.yaw -= e.relative.x * 0.0065 * sens
 			player.pitch = clampf(player.pitch - e.relative.y * 0.005 * sens, -1.0, 1.0)
 
@@ -1302,7 +1371,7 @@ func _process(delta: float) -> void:
 				round_i += 1
 				_begin_round()
 	if player != null and state != S.MENU:
-		_update_cam()
+		_update_cam(delta)
 		var tot: int = int(rules.get("rounds", 3 if big_map else 5))
 		lbl_top.text = "Raund %d/%d     %d : %d     %d s" % [mini(round_i + 1, tot), tot, score[0], score[1], int(ceil(maxf(round_t, 0.0)))]
 		if big_map:
@@ -1321,7 +1390,7 @@ func _process(delta: float) -> void:
 	for it in feed:
 		it["t"] = float(it["t"]) - delta
 	feed = feed.filter(func(it): return float(it["t"]) > 0.0)
-	cam.fov = lerpf(cam.fov, 35.0 if zoomed else 75.0, clampf(10.0 * delta, 0.0, 1.0))
+	cam.fov = lerpf(cam.fov, _scope_fov(), clampf(10.0 * delta, 0.0, 1.0))
 	msg_t -= delta
 	if msg_t <= 0.0 and state != S.END:
 		lbl_msg.text = ""
@@ -1339,6 +1408,15 @@ func _draw_hud() -> void:
 		return
 	var k := vs.y / 720.0
 	var c := vs * 0.5
+	if state == S.LIVE and _scope_fp():
+		var rin := vs.y * 0.44
+		var wdt := vs.length()
+		hud.draw_arc(c, rin + wdt * 0.5, 0.0, TAU, 128, Color(0, 0, 0, 1), wdt)
+		hud.draw_arc(c, rin, 0.0, TAU, 96, Color(0, 0, 0, 1), 4.0)
+		hud.draw_line(c + Vector2(-rin, 0), c + Vector2(rin, 0), Color(0, 0, 0, 0.85), 2.0)
+		hud.draw_line(c + Vector2(0, -rin), c + Vector2(0, rin), Color(0, 0, 0, 0.85), 2.0)
+		hud.draw_circle(c, 2.5, Color(1, 0.1, 0.1))
+		hud.draw_string(ThemeDB.fallback_font, c + Vector2(rin * 0.55, rin * 0.9), SCOPE_NAMES[_scope_eff()], HORIZONTAL_ALIGNMENT_LEFT, -1, int(26.0 * k), Color(1, 1, 1, 0.8))
 	for d in [Vector2(1, 0), Vector2(-1, 0), Vector2(0, 1), Vector2(0, -1)]:
 		hud.draw_line(c + d * 4.0, c + d * 14.0, Color.WHITE, 2.0)
 	if state == S.PICK:
@@ -1659,8 +1737,8 @@ func _build_lobby() -> void:
 	char_panel.visible = false
 	# qurollar oynasi
 	arsenal_panel = Panel.new()
-	arsenal_panel.position = Vector2(vs.x * 0.5 - 380 * k, 50 * k)
-	arsenal_panel.size = Vector2(760, 620) * k
+	arsenal_panel.position = Vector2(vs.x * 0.5 - 380 * k, 28 * k)
+	arsenal_panel.size = Vector2(760, 660) * k
 	arsenal_panel.add_theme_stylebox_override("panel", _sbox(Color(0.04, 0.03, 0.09, 0.96), Color(0.75, 0.6, 0.2, 0.95), 3, 14))
 	lobby.add_child(arsenal_panel)
 	var at := _gold_lab("QUROLLAR", int(30 * k))
@@ -1706,15 +1784,23 @@ func _build_lobby() -> void:
 		pb.max_value = 100.0
 		arsenal_panel.add_child(pb)
 		ars_bars.append(pb)
+	var sl := _lab("Pritsel", int(18 * k))
+	sl.position = Vector2(20, 486) * k
+	arsenal_panel.add_child(sl)
+	scope_b = []
+	for i in range(4):
+		var sb2 := _mkbtn(str(SCOPE_NAMES[i]), int(20 * k), Vector2(110 + i * 150, 478) * k, Vector2(142, 38) * k, false, _lb_scope.bind(i))
+		arsenal_panel.add_child(sb2)
+		scope_b.append(sb2)
 	var ck := CheckButton.new()
 	ck.text = "Har raund shu qurol bilan (so'ramasdan)"
-	ck.position = Vector2(20, 484) * k
+	ck.position = Vector2(20, 526) * k
 	ck.add_theme_font_size_override("font_size", int(20 * k))
 	ck.button_pressed = bool(cfg["autopick"])
 	ck.toggled.connect(func(on: bool): _set_cfg("autopick", on))
 	arsenal_panel.add_child(ck)
-	arsenal_panel.add_child(_mkbtn("TANLASH", int(26 * k), Vector2(20, 540) * k, Vector2(350, 60) * k, true, _ars_confirm))
-	arsenal_panel.add_child(_mkbtn("YOPISH", int(26 * k), Vector2(390, 540) * k, Vector2(350, 60) * k, false, _lb_arsenal_toggle))
+	arsenal_panel.add_child(_mkbtn("TANLASH", int(26 * k), Vector2(20, 584) * k, Vector2(350, 60) * k, true, _ars_confirm))
+	arsenal_panel.add_child(_mkbtn("YOPISH", int(26 * k), Vector2(390, 584) * k, Vector2(350, 60) * k, false, _lb_arsenal_toggle))
 	arsenal_panel.visible = false
 	_mod_call("on_lobby_build", [lobby, k])
 
@@ -1741,11 +1827,23 @@ func _ars_confirm() -> void:
 	_refresh_showcase()
 
 
+func _lb_scope(i: int) -> void:
+	cfg["scope"] = i
+	_save_settings()
+	_refresh_scope_btns()
+
+
+func _refresh_scope_btns() -> void:
+	for i in range(scope_b.size()):
+		_style_btn(scope_b[i], int(cfg["scope"]) == i)
+
+
 func _lb_arsenal_toggle() -> void:
 	arsenal_panel.visible = not arsenal_panel.visible
 	char_panel.visible = false
 	if arsenal_panel.visible:
 		_ars_select(clampi(int(cfg["fav"]), 0, WeaponDB.W.size() - 1))
+		_refresh_scope_btns()
 
 
 func _lb_char_toggle() -> void:

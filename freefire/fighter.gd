@@ -164,6 +164,9 @@ var rl := 0.0
 var stance := 0
 var last_stance := -1
 var yaw := 0.0
+var body_yaw := 0.0
+var aiming := false
+var free_look_on := true
 var pitch := 0.0
 var alive := true
 var move_input := Vector2.ZERO
@@ -645,6 +648,7 @@ func _tracer(a: Vector3, b: Vector3) -> void:
 func reset(pos: Vector3, y: float) -> void:
 	global_position = pos
 	yaw = y
+	body_yaw = y
 	pitch = 0.0
 	hp = 200
 	alive = true
@@ -724,7 +728,7 @@ func try_fire() -> void:
 	var space := get_world_3d().direct_space_state
 	var mpos := muzzle.global_position
 	for i in range(int(w["pel"])):
-		var sp: float = w["spread"] * (3.0 if is_bot else 1.0)
+		var sp: float = w["spread"] * (3.0 if is_bot else 1.0) * (0.6 if aiming else 1.0)
 		var d := (aim_dir + Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)) * sp).normalized()
 		var q := PhysicsRayQueryParameters3D.create(from, from + d * 120.0, 7, [get_rid(), head_area.get_rid()])
 		q.collide_with_areas = true
@@ -785,7 +789,7 @@ func _physics_process(delta: float) -> void:
 		velocity.y -= 20.0 * delta
 	want_jump = false
 	move_and_slide()
-	rotation.y = yaw
+	_update_body_yaw(delta)
 	if want_fire:
 		try_fire()
 	# animatsiya va effektlar
@@ -925,11 +929,25 @@ func _point_bone(a: String, b: String, target: Vector3) -> void:
 	_set_abs(i, Basis(Quaternion(rd, td)) * gi.basis)
 
 
-func _turn_bone(key: String, ang: float) -> void:
+func _turn_bone(key: String, ang: float, yaw_ang: float = 0.0) -> void:
 	if not ch_bones.has(key):
 		return
 	var i: int = ch_bones[key]
-	_set_abs(i, Basis(Vector3.RIGHT, ang) * ch_sk.get_bone_global_rest(i).basis)
+	_set_abs(i, Basis(Vector3.UP, yaw_ang) * Basis(Vector3.RIGHT, ang) * ch_sk.get_bone_global_rest(i).basis)
+
+
+func _update_body_yaw(delta: float) -> void:
+	if is_bot or not free_look_on:
+		body_yaw = yaw
+	else:
+		var face_aim := aiming or want_fire or fired_t > 1.0
+		var moving := move_input.length() > 0.1
+		if face_aim:
+			body_yaw = lerp_angle(body_yaw, yaw, clampf(18.0 * delta, 0.0, 1.0))
+		elif moving:
+			var tgt := yaw + atan2(-move_input.x, -move_input.y)
+			body_yaw = lerp_angle(body_yaw, tgt, clampf(10.0 * delta, 0.0, 1.0))
+	rotation.y = body_yaw
 
 
 func lobby_pose() -> void:
@@ -948,7 +966,8 @@ func _char_anim(force_ground: bool = false) -> void:
 	var breathe := sin(Time.get_ticks_msec() * 0.0022) * 0.015
 	var lean := run * 0.07 + sprint_blend * 0.14 + kick * 0.04 - pitch * 0.2 + breathe
 	_turn_bone("spine1", lean)
-	_turn_bone("head", -pitch * 0.55 - lean * 0.6)
+	var head_dy := clampf(wrapf(yaw - body_yaw, -PI, PI), -1.0, 1.0)
+	_turn_bone("head", -pitch * 0.55 - lean * 0.6, head_dy * 0.7)
 	var rlp := 0.0
 	if rl > 0.0:
 		rlp = sin(clampf(1.0 - rl / float(WeaponDB.W[wid]["rl"]), 0.0, 1.0) * PI)
