@@ -31,7 +31,7 @@ jobs:
           pip install --quiet gdown
           rm -rf /tmp/drv
           mkdir -p /tmp/drv
-          gdown --folder "https://drive.google.com/drive/folders/${FOLDER_ID}" -O /tmp/drv --remaining-ok
+          gdown --folder "https://drive.google.com/drive/folders/${FOLDER_ID}" -O /tmp/drv
           if ls /tmp/drv/*.gd >/dev/null 2>&1; then
             SRC=/tmp/drv
           else
