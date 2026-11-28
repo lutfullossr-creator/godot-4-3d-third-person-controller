@@ -51,7 +51,7 @@ var hitm_head := false
 var feed: Array = []
 var sfx2d: AudioStreamPlayer
 var layout := {}
-const CFG_KEYS := ["sens", "vol", "assist", "autofire", "name", "tag", "quality", "fps", "showfps", "minimap", "diff", "freelook", "scope", "kills", "wins", "games", "fav", "autopick", "music"]
+const CFG_KEYS := ["sens", "vol", "assist", "autofire", "name", "tag", "quality", "fps", "showfps", "minimap", "diff", "freelook", "scope", "gunfix", "kills", "wins", "games", "fav", "autopick", "music"]
 const FPS_OPTS := [30, 45, 60, 90, 120]
 const MAP_CRATES := [
 	[Vector3(-6, 0.75, 6), Vector3(3, 1.5, 3)],
@@ -71,7 +71,7 @@ const GUN_ICONS := {
 	"lmg": [[0.00, 0.38, 0.38, 0.46], [0.26, 0.28, 0.80, 0.56], [0.78, 0.34, 0.98, 0.58], [0.40, 0.56, 0.62, 0.90], [0.66, 0.56, 0.74, 0.78]],
 	"pistol": [[0.20, 0.32, 0.80, 0.50], [0.30, 0.50, 0.50, 0.88], [0.52, 0.50, 0.62, 0.64]],
 }
-var cfg := {"sens": 1.0, "vol": 1.0, "assist": 1.0, "autofire": true, "name": "Player", "tag": "", "quality": 1, "fps": 2, "showfps": false, "minimap": true, "diff": 1, "freelook": true, "scope": 0, "kills": 0, "wins": 0, "games": 0, "fav": 0, "autopick": false, "music": true}
+var cfg := {"sens": 1.0, "vol": 1.0, "assist": 1.0, "autofire": true, "name": "Player", "tag": "", "quality": 1, "fps": 2, "showfps": false, "minimap": true, "diff": 1, "freelook": true, "scope": 0, "gunfix": {}, "kills": 0, "wins": 0, "games": 0, "fav": 0, "autopick": false, "music": true}
 var sun: DirectionalLight3D
 var chars: Array = []
 var sel_char := 0
@@ -1687,6 +1687,9 @@ func _gold_lab(txt: String, sz: int) -> Label:
 
 
 func _build_lobby() -> void:
+	if not (cfg["gunfix"] is Dictionary):
+		cfg["gunfix"] = {}
+	Fighter.gun_fix = cfg["gunfix"]
 	var vs := get_viewport().get_visible_rect().size
 	var k := vs.y / 720.0
 	ui_k = k
@@ -1732,6 +1735,8 @@ func _build_lobby() -> void:
 	var cx := vs.x * 0.40
 	lobby.add_child(_mkbtn("<", int(34 * k), Vector2(cx - 200 * k, vs.y - 128 * k), Vector2(64, 64) * k, false, _lb_prev))
 	lobby.add_child(_mkbtn(">", int(34 * k), Vector2(cx + 136 * k, vs.y - 128 * k), Vector2(64, 64) * k, false, _lb_next))
+	lobby.add_child(_mkbtn("Qurol: aylantirish", int(18 * k), Vector2(cx - 200 * k, vs.y - 196 * k), Vector2(190, 44) * k, false, _lb_gunfix.bind(1)))
+	lobby.add_child(_mkbtn("Qurol: ag'darish", int(18 * k), Vector2(cx + 10 * k, vs.y - 196 * k), Vector2(190, 44) * k, false, _lb_gunfix.bind(2)))
 	lb_char = _lab("", int(24 * k))
 	lb_char.position = Vector2(cx - 130 * k, vs.y - 118 * k)
 	lb_char.custom_minimum_size = Vector2(260 * k, 0)
@@ -1944,6 +1949,20 @@ func _lb_next() -> void:
 func _lb_map(i: int) -> void:
 	sel_map = i
 	_refresh_lobby()
+
+
+func _lb_gunfix(bit: int) -> void:
+	var w: Dictionary = WeaponDB.W[clampi(int(cfg["fav"]), 0, WeaponDB.W.size() - 1)]
+	var key: String = Fighter.key_of(w)
+	if key == "":
+		lb_result.text = "Bu qurolda 3D model yoʻq"
+		return
+	var cur: int = int(cfg["gunfix"].get(key, 0))
+	cfg["gunfix"][key] = cur ^ bit
+	Fighter.gun_fix = cfg["gunfix"]
+	Fighter.clear_fit()
+	_save_settings()
+	_refresh_showcase()
 
 
 func _lb_mode(n: int) -> void:

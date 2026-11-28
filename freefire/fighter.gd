@@ -11,6 +11,18 @@ const RELOAD_NAME := {
 }
 static var _snd_cache := {}
 static var _fit_cache := {}
+static var gun_fix := {}
+
+
+static func clear_fit() -> void:
+	_fit_cache.clear()
+
+
+static func key_of(w: Dictionary) -> String:
+	var k: String = MODEL_FOR.get(w["n"], "")
+	if k == "":
+		k = guns_key(w)
+	return k
 
 # Haqiqiy 3D qurol modellari (FBX + tekstura). Fayl boʻlmasa, oddiy model ishlatiladi.
 const MODELS := {
@@ -458,7 +470,7 @@ func _xform_to(n: Node, root: Node) -> Transform3D:
 
 
 # Modelni avtomatik joylashtirish: oʻlcham, ogʻiz yoʻnalishi (-Z) va tepa tomon (+Y)
-func _compute_fit(holder: Node3D, inst: Node3D, meshes: Array, info: Dictionary) -> Dictionary:
+func _compute_fit(holder: Node3D, inst: Node3D, meshes: Array, info: Dictionary, fix: int = 0) -> Dictionary:
 	inst.transform = Transform3D.IDENTITY
 	var box := AABB()
 	var first := true
@@ -506,6 +518,10 @@ func _compute_fit(holder: Node3D, inst: Node3D, meshes: Array, info: Dictionary)
 	e_h[hx] = 1.0
 	var u_mz := e_a if frac_a < 0.5 else -e_a
 	var u_up := e_h if frac_h < 0.5 else -e_h
+	if fix & 1:
+		u_mz = -u_mz
+	if fix & 2:
+		u_up = -u_up
 	var z_dir := -u_mz
 	var y_dir := u_up
 	var x_dir := y_dir.cross(z_dir)
@@ -537,9 +553,11 @@ func _make_model(key: String):
 		var mat := _gun_material(info["tex"])
 		for m in meshes:
 			m.material_override = mat
-	if not _fit_cache.has(key):
-		_fit_cache[key] = _compute_fit(holder, inst, meshes, info)
-	var f: Dictionary = _fit_cache[key]
+	var fx: int = int(gun_fix.get(key, 0))
+	var ck := key + "#" + str(fx)
+	if not _fit_cache.has(ck):
+		_fit_cache[ck] = _compute_fit(holder, inst, meshes, info, fx)
+	var f: Dictionary = _fit_cache[ck]
 	inst.transform = f["xf"]
 	return {"node": holder, "muzzle": f["muzzle"]}
 
@@ -573,6 +591,11 @@ func _attach_scope() -> void:
 	if scope_node != null and is_instance_valid(scope_node):
 		scope_node.queue_free()
 	scope_node = null
+	if gun_root != null and parts_root != null and is_inside_tree():
+		var found: bool = not parts_root.find_children("*", "MeshInstance3D", true, false).is_empty()
+		if found:
+			gun_box = _gun_aabb()
+		gun_box_ok = found
 	var lvl := mini(scope_lvl, _scope_cap())
 	if lvl <= 0 or gun_root == null or parts_root == null or not is_inside_tree():
 		return
@@ -603,6 +626,7 @@ func _bot_scope() -> int:
 func _build_gun_core() -> void:
 	if parts_root == null:
 		return
+	gun_box_ok = false
 	for c in parts_root.get_children():
 		parts_root.remove_child(c)
 		c.queue_free()
@@ -924,7 +948,7 @@ func set_character(path: String) -> void:
 		if c is MeshInstance3D and c.mesh is BoxMesh:
 			c.visible = false
 	vis.add_child(m)
-	m.rotation.y = PI
+	_char_orient(m)
 	var mn := Vector3(1e9, 1e9, 1e9)
 	var mx := Vector3(-1e9, -1e9, -1e9)
 	for mi in m.find_children("*", "MeshInstance3D", true, false):
@@ -943,6 +967,39 @@ func set_character(path: String) -> void:
 
 var ch_sk: Skeleton3D = null
 var ch_bones := {}
+var ch_cs := Basis.IDENTITY
+var gun_box := AABB()
+var gun_box_ok := false
+
+
+func _char_orient(m: Node3D) -> void:
+	ch_cs = Basis.IDENTITY
+	m.rotation = Vector3.ZERO
+	var skl: Skeleton3D = null
+	for skv in m.find_children("*", "Skeleton3D", true, false):
+		skl = skv
+		break
+	if skl == null:
+		m.rotation.y = PI
+		return
+	var li := -1
+	var ri := -1
+	for i in range(skl.get_bone_count()):
+		var nm: String = skl.get_bone_name(i).to_lower()
+		if nm.ends_with("leftarm") and li < 0:
+			li = i
+		if nm.ends_with("rightarm") and ri < 0:
+			ri = i
+	if li < 0 or ri < 0:
+		m.rotation.y = PI
+		return
+	var lo: Vector3 = skl.get_bone_global_rest(li).origin
+	var ro: Vector3 = skl.get_bone_global_rest(ri).origin
+	if lo.x < ro.x:
+		ch_cs = Basis(Vector3.UP, PI)
+	var fw: Vector3 = skl.global_transform.basis * (ch_cs * Vector3(0, 0, 1))
+	fw = vis.global_transform.basis.inverse() * fw
+	m.rotation.y = PI - atan2(fw.x, fw.z)
 
 
 func _char_pose(m: Node3D) -> void:
@@ -983,6 +1040,10 @@ func _set_abs(i: int, g: Basis) -> void:
 
 
 func _point_bone(a: String, b: String, target: Vector3) -> void:
+	_point_bone_raw(a, b, ch_cs * target)
+
+
+func _point_bone_raw(a: String, b: String, target: Vector3) -> void:
 	if not ch_bones.has(a) or not ch_bones.has(b):
 		return
 	var i: int = ch_bones[a]
@@ -1000,7 +1061,7 @@ func _turn_bone(key: String, ang: float, yaw_ang: float = 0.0) -> void:
 	if not ch_bones.has(key):
 		return
 	var i: int = ch_bones[key]
-	_set_abs(i, Basis(Vector3.UP, yaw_ang) * Basis(Vector3.RIGHT, ang) * ch_sk.get_bone_global_rest(i).basis)
+	_set_abs(i, Basis(Vector3.UP, yaw_ang) * Basis(ch_cs * Vector3.RIGHT, ang) * ch_sk.get_bone_global_rest(i).basis)
 
 
 func _update_body_yaw(delta: float) -> void:
@@ -1023,6 +1084,43 @@ func lobby_pose() -> void:
 	_char_anim(true)
 
 
+func _arm_ik(side: String, tgt_world: Vector3, pole_char: Vector3) -> void:
+	var ka := side + "arm"
+	var kf := side + "forearm"
+	var kh := side + "hand"
+	if not (ch_bones.has(ka) and ch_bones.has(kf) and ch_bones.has(kh)):
+		return
+	var ia: int = ch_bones[ka]
+	var jf: int = ch_bones[kf]
+	var jh: int = ch_bones[kh]
+	var ga := ch_sk.get_bone_global_rest(ia)
+	var gf := ch_sk.get_bone_global_rest(jf)
+	var gh := ch_sk.get_bone_global_rest(jh)
+	var l1 := (gf.origin - ga.origin).length()
+	var l2 := (gh.origin - gf.origin).length()
+	var s_pos: Vector3 = ch_sk.get_bone_global_pose(ia).origin
+	var t_pos: Vector3 = ch_sk.global_transform.affine_inverse() * tgt_world
+	var v := t_pos - s_pos
+	var dist := v.length()
+	if dist < 0.0001 or l1 < 0.0001 or l2 < 0.0001:
+		return
+	var dmax := (l1 + l2) * 0.995
+	var dmin := absf(l1 - l2) * 1.02 + 0.001
+	var d := clampf(dist, dmin, dmax)
+	var dir := v / dist
+	var a := (l1 * l1 - l2 * l2 + d * d) / (2.0 * d)
+	var h := sqrt(maxf(l1 * l1 - a * a, 0.0))
+	var pole: Vector3 = ch_cs * pole_char
+	pole = pole - dir * pole.dot(dir)
+	if pole.length() < 0.001:
+		pole = Vector3.UP
+	pole = pole.normalized()
+	var elbow := s_pos + dir * a + pole * h
+	var hand_t := s_pos + dir * d
+	_point_bone_raw(ka, kf, (elbow - s_pos).normalized())
+	_point_bone_raw(kf, kh, (hand_t - elbow).normalized())
+
+
 func _char_anim(force_ground: bool = false) -> void:
 	if ch_sk == null:
 		return
@@ -1041,10 +1139,23 @@ func _char_anim(force_ground: bool = false) -> void:
 	var armsw := sin(anim_t) * run * 0.08
 	var rec := kick * 0.35
 	var low := sprint_blend * 0.35
-	_point_bone("leftarm", "leftforearm", Vector3(-0.25 + 0.2 * rlp, -0.6 - 0.25 * rlp - low, 0.55 - 0.2 * rlp - rec + armsw))
-	_point_bone("leftforearm", "lefthand", Vector3(-0.30 + 0.55 * rlp, 0.10 - 0.55 * rlp, 0.95 - 0.5 * rlp - rec))
-	_point_bone("rightarm", "rightforearm", Vector3(0.25, -0.6 - low, 0.55 - rec - armsw))
-	_point_bone("rightforearm", "righthand", Vector3(0.40, 0.15, 0.90 - rec))
+	if gun_box_ok:
+		var gb := gun_box
+		var cx := gb.get_center().x
+		var rgrip := Vector3(cx, gb.position.y + gb.size.y * 0.28, gb.end.z - gb.size.z * 0.30)
+		var lgrip := Vector3(cx, gb.position.y + gb.size.y * 0.32, gb.position.z + gb.size.z * 0.36)
+		if str(WeaponDB.W[wid]["s"]) == "pistol":
+			rgrip = Vector3(cx, gb.position.y + gb.size.y * 0.35, gb.end.z - gb.size.z * 0.25)
+			lgrip = rgrip + Vector3(0.02, -0.03, -0.05)
+		lgrip += Vector3(0.0, -0.16, 0.2) * rlp
+		var gt := gun_root.global_transform
+		_arm_ik("right", gt * rgrip, Vector3(-1.0, -0.7, -0.2))
+		_arm_ik("left", gt * lgrip, Vector3(1.0, -0.7, -0.2))
+	else:
+		_point_bone("leftarm", "leftforearm", Vector3(-0.25 + 0.2 * rlp, -0.6 - 0.25 * rlp - low, 0.55 - 0.2 * rlp - rec + armsw))
+		_point_bone("leftforearm", "lefthand", Vector3(-0.30 + 0.55 * rlp, 0.10 - 0.55 * rlp, 0.95 - 0.5 * rlp - rec))
+		_point_bone("rightarm", "rightforearm", Vector3(0.25, -0.6 - low, 0.55 - rec - armsw))
+		_point_bone("rightforearm", "righthand", Vector3(0.40, 0.15, 0.90 - rec))
 	var air := (not is_on_floor()) and not force_ground
 	for side in ["left", "right"]:
 		var sw: float = leg_l.rotation.x if side == "left" else leg_r.rotation.x
